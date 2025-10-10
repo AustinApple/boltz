@@ -29,7 +29,7 @@ from boltz.data.parse.csv import parse_csv
 from boltz.data.parse.fasta import parse_fasta
 from boltz.data.parse.yaml import parse_yaml
 from boltz.data.types import MSA, Manifest, Record
-from boltz.data.write.writer import BoltzAffinityWriter, BoltzWriter
+from boltz.data.write.writer import BoltzAffinityWriter, BoltzWriter, BoltzAffinityInputWriter
 from boltz.model.models.boltz1 import Boltz1
 from boltz.model.models.boltz2 import Boltz2
 
@@ -748,6 +748,8 @@ def process_inputs(
     processed_constraints_dir = out_dir / "processed" / "constraints"
     processed_templates_dir = out_dir / "processed" / "templates"
     processed_mols_dir = out_dir / "processed" / "mols"
+    
+    processed_affinity_module_inputs_dir = out_dir / "processed" / "affinity_module_inputs"
     predictions_dir = out_dir / "predictions"
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -758,6 +760,9 @@ def process_inputs(
     processed_constraints_dir.mkdir(parents=True, exist_ok=True)
     processed_templates_dir.mkdir(parents=True, exist_ok=True)
     processed_mols_dir.mkdir(parents=True, exist_ok=True)
+
+    processed_affinity_module_inputs_dir.mkdir(parents=True, exist_ok=True)
+
     predictions_dir.mkdir(parents=True, exist_ok=True)
 
     # Load CCD
@@ -1038,6 +1043,11 @@ def cli() -> None:
     is_flag=True,
     help=" to dump the s and z embeddings into a npz file. Default is False.",
 )
+@click.option(
+    "--save_affinity_inputs", 
+    is_flag=True, 
+    help="Save affinity module inputs.",
+)
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
@@ -1076,6 +1086,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     num_subsampled_msa: int = 1024,
     no_kernels: bool = False,
     write_embeddings: bool = False,
+    save_affinity_inputs: bool = False
 ) -> None:
     """Run predictions with Boltz."""
     # If cpu, write a friendly warning
@@ -1355,6 +1366,12 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             output_dir=out_dir / "predictions",
         )
 
+        AffinityInputWriter = BoltzAffinityInputWriter(
+            data_dir=processed.targets_dir,
+            output_dir=out_dir / "processed" / "affinity_module_inputs",
+        )
+
+
         data_module = Boltz2InferenceDataModule(
             manifest=manifest_filtered,
             target_dir=out_dir / "predictions",
@@ -1403,6 +1420,8 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         model_module.eval()
 
         trainer.callbacks[0] = pred_writer
+        if save_affinity_inputs:
+            trainer.callbacks.append(AffinityInputWriter)
         trainer.predict(
             model_module,
             datamodule=data_module,

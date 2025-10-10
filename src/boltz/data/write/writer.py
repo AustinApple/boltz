@@ -341,3 +341,76 @@ class BoltzAffinityWriter(BasePredictionWriter):
         """Print the number of failed examples."""
         # Print number of failed examples
         print(f"Number of failed examples: {self.failed}")  # noqa: T201
+
+
+
+class BoltzAffinityInputWriter(BasePredictionWriter):
+    """Custom writer for predictions."""
+
+    def __init__(
+        self,
+        data_dir: str,
+        output_dir: str,
+    ) -> None:
+        """Initialize the writer.
+
+        Parameters
+        ----------
+        output_dir : str
+            The directory to save the predictions.
+
+        """
+        super().__init__(write_interval="batch")
+        self.failed = 0
+        self.data_dir = Path(data_dir)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def write_on_batch_end(
+        self,
+        trainer: Trainer,  
+        pl_module: LightningModule,  
+        prediction: dict[str, Tensor],
+        batch_indices: list[int],  
+        batch: dict[str, Tensor],
+        batch_idx: int,
+        dataloader_idx: int,
+    ) -> None:
+        """Write the predictions to disk."""
+        if prediction["exception"]:
+            self.failed += 1
+            return
+        # Dump affinity summary
+        affinity_inputs = {}
+        s_inputs = prediction["s_inputs"].cpu().numpy()
+        z_affinity = prediction["z_affinity"].cpu().numpy()
+        coords_affinity = prediction["coords_affinity"].cpu().numpy()
+        feats_raw = prediction["feats"]
+
+        feats_dict = {
+            k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else v)
+            for k, v in feats_raw.items()
+        }
+            
+
+        # Save the affinity summary
+        struct_dir = self.output_dir / batch["record"][0].id
+        struct_dir.mkdir(exist_ok=True)
+        path = struct_dir / f"affinity_input_{batch['record'][0].id}.npz"
+        np.savez_compressed(
+            path,
+            s_inputs=s_inputs,
+            z_affinity=z_affinity,
+            coords_affinity=coords_affinity,
+            **feats_dict,
+        )
+     
+
+    def on_predict_epoch_end(
+        self,
+        trainer: Trainer,  # noqa: ARG002
+        pl_module: LightningModule,  # noqa: ARG002
+    ) -> None:
+        """Print the number of failed examples."""
+        # Print number of failed examples
+        print(f"Number of failed examples: {self.failed}")  # noqa: T201

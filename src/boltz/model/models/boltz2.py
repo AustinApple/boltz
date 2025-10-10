@@ -624,7 +624,12 @@ class Boltz2(LightningModule):
                 None, None
             ]
             s_inputs = self.input_embedder(feats, affinity=True)
-
+            dict_out.update(
+                {"s_inputs": s_inputs,
+                 "z_affinity": z_affinity,
+                 "coords_affinity": coords_affinity,
+                 "feats": feats}
+            )
             with torch.autocast("cuda", enabled=False):
                 if self.affinity_ensemble:
                     dict_out_affinity1 = self.affinity_module1(
@@ -1105,6 +1110,11 @@ class Boltz2(LightningModule):
                     pred_dict["protein_iptm"] = out["protein_iptm"]
                     pred_dict["pair_chains_iptm"] = out["pair_chains_iptm"]
             if self.affinity_prediction:
+                pred_dict["s_inputs"] = out["s_inputs"]
+                pred_dict["z_affinity"] = out["z_affinity"]
+                pred_dict["coords_affinity"] = out["coords_affinity"]
+                pred_dict["feats"] = out["feats"]
+
                 pred_dict["affinity_pred_value"] = out["affinity_pred_value"]
                 pred_dict["affinity_probability_binary"] = out[
                     "affinity_probability_binary"

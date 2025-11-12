@@ -90,3 +90,6 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "regression",
 ]
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["davis_common*"]

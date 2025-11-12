@@ -385,8 +385,7 @@ class BoltzAffinityInputWriter(BasePredictionWriter):
         s_inputs = prediction["s_inputs"].cpu().numpy()
         z_affinity = prediction["z_affinity"].cpu().numpy()
         coords_affinity = prediction["coords_affinity"].cpu().numpy()
-        feats_raw = prediction["feats"]
-
+        feats_raw = {k: v for k, v in prediction["feats"].items() if k in ("token_to_rep_atom", "token_pad_mask", "mol_type", "affinity_token_mask")}
         feats_dict = {
             k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else v)
             for k, v in feats_raw.items()

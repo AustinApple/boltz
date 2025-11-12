@@ -21,7 +21,7 @@ from boltz.data.tokenize.tokenizer import Tokenizer
 from boltz.data.types import MSA, Connection, Input, Manifest, Record, Structure
 
 import pandas as pd
-from kdbnet.dta_davis_complete import create_fine_tuning_different_mutation_same_drug_split, create_fine_tuning_same_mutation_different_drug_split
+from davis_common.dta_davis_complete import create_fine_tuning_different_mutation_same_drug_split, create_fine_tuning_same_mutation_different_drug_split
 
 
 def pad_to_max(data: list[Tensor], value: float = 0) -> tuple[Tensor, Tensor]:
@@ -112,7 +112,7 @@ def load_input(protein: str, ligand: str, target_dir: Path) -> tuple[np.ndarray,
         The loaded input.
     """
     # Load the precomputed inputs
-    inputs = np.load(target_dir / "processed" / "affinity_module_inputs_shrink" / f"{protein}_{ligand}" / f"affinity_input_{protein}_{ligand}.npz", allow_pickle=True)
+    inputs = np.load(target_dir / "processed" / "affinity_module_inputs" / f"{protein}_{ligand}" / f"affinity_input_{protein}_{ligand}.npz", allow_pickle=True)
     feats = {k: v for k, v in inputs.items() if k not in ['s_inputs', 'z_affinity', 'coords_affinity']}
 
     return inputs["s_inputs"], inputs["z_affinity"], inputs["coords_affinity"], feats
@@ -205,12 +205,12 @@ class AffinityModuleDataset(torch.utils.data.Dataset):
         if self.split_method == 'different_mutation_same_drug':
             self.split_df, _, _, _ = create_fine_tuning_different_mutation_same_drug_split(protein=self.protein, 
                                                                                       drug=self.drug, 
-                                                                                      df=self.data_df, 
+                                                                                      df=self.df, 
                                                                                       nontruncated_affinity=self.nontruncated_affinity)
-        elif self.split_method == 'same_mutation_different_drug' and not self.seed:
+        elif self.split_method == 'same_mutation_different_drug':
             self.split_df, _, _ = create_fine_tuning_same_mutation_different_drug_split(protein=self.protein, 
                                                                                    mutation=self.mutation, 
-                                                                                   df=self.data_df, 
+                                                                                   df=self.df, 
                                                                                    nontruncated_affinity=self.nontruncated_affinity)
         else:
             raise ValueError("Unknown split method: {}".format(self.split_method))    
@@ -245,7 +245,6 @@ class AffinityModuleDataset(torch.utils.data.Dataset):
         """
 
         try:
-            idx = np.random.choice(len(self.split_df))
             protein = self.split_df.iloc[idx]['protein']
             ligand = self.split_df.iloc[idx]['drug']
             y = self.split_df.iloc[idx]['y']
@@ -258,7 +257,7 @@ class AffinityModuleDataset(torch.utils.data.Dataset):
             feats = {k: torch.tensor(v).float() if isinstance(v, np.ndarray) else v for k, v in feats.items()}
 
         except Exception as e:
-            #print(f"Error loading data for index {idx}: {e}")
+            print(f"Error loading data for index {idx}: {e}")
             return self.__getitem__(idx)
 
         return s_inputs, z_affinity, coords_affinity, feats, y
@@ -321,9 +320,10 @@ class AffinityModuleDataModule(pl.LightningDataModule):
         )
         return DataLoader(
             train_set,
-            batch_size=len(train_set),
+            batch_size=8,
             num_workers=5,
-            pin_memory=True,
+            persistent_workers=False,
+            pin_memory=False,
             shuffle=True,
             collate_fn=collate,
         )

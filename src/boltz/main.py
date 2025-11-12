@@ -393,6 +393,12 @@ def filter_inputs_affinity(
         if r.affinity
         and (outdir / "predictions" / r.id / f"affinity_{r.id}.json").exists()
     }
+    
+    failed = {
+        r.id
+        for r in manifest.records
+        if not (outdir / "predictions" / r.id / f"pre_affinity_{r.id}.npz").exists()
+    }
 
     # Remove them from the input data
     if existing and not override:
@@ -408,7 +414,7 @@ def filter_inputs_affinity(
         msg = "Found existing affinity predictions, will override."
         click.echo(msg)
 
-    return Manifest([r for r in manifest.records if r.id not in existing])
+    return Manifest([r for r in manifest.records if r.id not in existing and r.id not in failed])
 
 
 def compute_msa(

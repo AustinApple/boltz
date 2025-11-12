@@ -21,7 +21,7 @@ from boltz.data.tokenize.tokenizer import Tokenizer
 from boltz.data.types import MSA, Connection, Input, Manifest, Record, Structure
 
 import pandas as pd
-from kdbnet.dta_davis_complete import create_fold, create_fold_setting_cold, create_full_ood_set, create_seq_identity_fold, create_wt_mutation_split, create_new_drug_tanimoto, create_new_protein_name, create_seq_identity_drug_tanimoto_fold
+from davis_common.dta_davis_complete import create_fold, create_fold_setting_cold, create_full_ood_set, create_seq_identity_fold, create_wt_mutation_split, create_new_drug_tanimoto, create_new_protein_name, create_seq_identity_drug_tanimoto_fold
 
 
 
@@ -111,7 +111,7 @@ def load_input(protein: str, ligand: str, target_dir: Path) -> tuple[np.ndarray,
         The loaded input.
     """
     # Load the precomputed inputs
-    inputs = np.load(target_dir / "processed" / "affinity_module_inputs_shrink" / f"{protein}_{ligand}" / f"affinity_input_{protein}_{ligand}.npz", allow_pickle=True)
+    inputs = np.load(target_dir / "processed" / "affinity_module_inputs" / f"{protein}_{ligand}" / f"affinity_input_{protein}_{ligand}.npz", allow_pickle=True)
     feats = {k: v for k, v in inputs.items() if k not in ['s_inputs', 'z_affinity', 'coords_affinity']}
 
     return inputs["s_inputs"], inputs["z_affinity"], inputs["coords_affinity"], feats
@@ -267,6 +267,8 @@ class AffinityModuleDataset(torch.utils.data.Dataset):
             The length of the dataset.
 
         """
+        if self.split_method == 'wt_mutation' and self.split == 'test_wt':
+            return 0
         return len(self.split_df)
     
 

@@ -376,41 +376,45 @@ def main(
         test_result = trainer.test(model_module, datamodule=data_module)
 
         # Expect epoch-level metrics without dataloader_idx suffix as we log in on_test_epoch_end
-        all_test_mse.append(test_result[0].get('test/mse', test_result[0].get('test/mse/dataloader_idx_0')))
-        all_test_rp.append(test_result[0].get('test/rp', test_result[0].get('test/rp/dataloader_idx_0')))
-        all_test_cindex.append(test_result[0].get('test/cindex', test_result[0].get('test/cindex/dataloader_idx_0')))
+        all_test_mse.append(test_result[0].get('test/mse', None))
+        all_test_rp.append(test_result[0].get('test/rp', None))
+        all_test_cindex.append(test_result[0].get('test/cindex', None))
+        
+        if split_method != 'wt_mutation':
+            all_test_wt_mse.append(test_result[1].get('test_wt/mse', None))
+            all_test_wt_rp.append(test_result[1].get('test_wt/rp', None))
+            all_test_wt_cindex.append(test_result[1].get('test_wt/cindex', None))
 
-        all_test_wt_mse.append(test_result[1].get('test_wt/mse', test_result[1].get('test_wt/mse/dataloader_idx_1')))
-        all_test_wt_rp.append(test_result[1].get('test_wt/rp', test_result[1].get('test_wt/rp/dataloader_idx_1')))
-        all_test_wt_cindex.append(test_result[1].get('test_wt/cindex', test_result[1].get('test_wt/cindex/dataloader_idx_1')))
-
-        all_test_mutation_mse.append(test_result[2].get('test_mutation/mse', test_result[2].get('test_mutation/mse/dataloader_idx_2')))
-        all_test_mutation_rp.append(test_result[2].get('test_mutation/rp', test_result[2].get('test_mutation/rp/dataloader_idx_2')))
-        all_test_mutation_cindex.append(test_result[2].get('test_mutation/cindex', test_result[2].get('test_mutation/cindex/dataloader_idx_2')))
+            all_test_mutation_mse.append(test_result[2].get('test_mutation/mse', None))
+            all_test_mutation_rp.append(test_result[2].get('test_mutation/rp', None))
+            all_test_mutation_cindex.append(test_result[2].get('test_mutation/cindex', None))
 
     print(f"mean test mse: {np.mean(all_test_mse):.2f}")
     print(f"std test mse: {np.std(all_test_mse):.2f}")
+    
     if split_method != 'wt_mutation':
         print(f"mean test_wt mse: {np.mean(all_test_wt_mse):.2f}")
         print(f"std test_wt mse: {np.std(all_test_wt_mse):.2f}")
-    print(f"mean test_mutation mse: {np.mean(all_test_mutation_mse):.2f}")
-    print(f"std test_mutation mse: {np.std(all_test_mutation_mse):.2f}")
+        print(f"mean test_mutation mse: {np.mean(all_test_mutation_mse):.2f}")
+        print(f"std test_mutation mse: {np.std(all_test_mutation_mse):.2f}")
 
     print(f"mean test rp: {np.mean(all_test_rp):.2f}")
     print(f"std test rp: {np.std(all_test_rp):.2f}")
+    
     if split_method != 'wt_mutation':
         print(f"mean test_wt rp: {np.mean(all_test_wt_rp):.2f}")
         print(f"std test_wt rp: {np.std(all_test_wt_rp):.2f}")
-    print(f"mean test_mutation rp: {np.mean(all_test_mutation_rp):.2f}")
-    print(f"std test_mutation rp: {np.std(all_test_mutation_rp):.2f}")
+        print(f"mean test_mutation rp: {np.mean(all_test_mutation_rp):.2f}")
+        print(f"std test_mutation rp: {np.std(all_test_mutation_rp):.2f}")
 
     print(f"mean test cindex: {np.mean(all_test_cindex):.2f}")
     print(f"std test cindex: {np.std(all_test_cindex):.2f}")
+    
     if split_method != 'wt_mutation':
         print(f"mean test_wt cindex: {np.mean(all_test_wt_cindex):.2f}")
         print(f"std test_wt cindex: {np.std(all_test_wt_cindex):.2f}")
-    print(f"mean test_mutation cindex: {np.mean(all_test_mutation_cindex):.2f}")
-    print(f"std test_mutation cindex: {np.std(all_test_mutation_cindex):.2f}")
+        print(f"mean test_mutation cindex: {np.mean(all_test_mutation_cindex):.2f}")
+        print(f"std test_mutation cindex: {np.std(all_test_mutation_cindex):.2f}")
 
 
 if __name__ == "__main__":  # pragma: no cover

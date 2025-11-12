@@ -15,7 +15,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from boltz.model.modules.affinity import AffinityModule
-from boltz.data.module.finetuning_AffinityModule import AffinityModuleDataModule, DataConfig, AffinityModuleDataset
+from boltz.data.module.finetuning_AffinityModule import AffinityModuleDataModule, DataConfig, AffinityModuleDataset, collate
 from omegaconf import OmegaConf, listconfig 
 
 import numpy as np
@@ -23,9 +23,11 @@ import pandas as pd
 from itertools import product
 from tqdm import tqdm
 
-from kdbnet.dta_davis_complete import create_fine_tuning_different_mutation_same_drug_split, create_fine_tuning_different_mutation_different_drug_split, create_fine_tuning_same_mutation_different_drug_split
+from davis_common.dta_davis_complete import create_fine_tuning_different_mutation_same_drug_split, create_fine_tuning_same_mutation_different_drug_split
 from torchmetrics.functional import mean_squared_error, pearson_corrcoef
 
+import shutil
+from pathlib import Path
 
 
 def get_cindex(pred: Tensor, gt: Tensor) -> Tensor:
@@ -87,12 +89,13 @@ def val_wt_groundtruth_baseline(wt_affinity, dataloader):
         label_list.append(label.detach().cpu())
 
     label = torch.cat(label_list, axis=0)
+    wt_affinity = torch.tensor(wt_affinity, dtype=label.dtype).reshape(-1, 1)
 
     if len(label) != len(wt_affinity):
         wt_affinity = torch.ones_like(label) * wt_affinity
     else:
-        assert len(label) == len(wt_affinity)
-
+        assert label.shape == wt_affinity.shape
+    
     mse = mean_squared_error(wt_affinity, label)
     rmse = mean_squared_error(wt_affinity, label, squared=False)
     coff = pearson_corrcoef(wt_affinity, label)
@@ -169,13 +172,13 @@ class LightningAffinityModule(LightningModule):
 
         # Log training metrics per-step; for val/test, compute full-dataset in epoch_end
         if stage == "train":
-            self.log(f"{stage}/loss", loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=y.shape[0])
+            self.log(f"{stage}/loss", loss, prog_bar=False, on_step=True, on_epoch=True, batch_size=y.shape[0])
             mse = mean_squared_error(y_hat, y)
-            self.log(f"{stage}/mse", mse, prog_bar=True, on_step=True, on_epoch=True, batch_size=y.shape[0])
+            self.log(f"{stage}/mse", mse, prog_bar=False, on_step=True, on_epoch=True, batch_size=y.shape[0])
             r = pearson_corrcoef(y_hat, y)
-            self.log(f"{stage}/rp", r, prog_bar=True, on_step=True, on_epoch=True, batch_size=y.shape[0])
+            self.log(f"{stage}/rp", r, prog_bar=False, on_step=True, on_epoch=True, batch_size=y.shape[0])
             cindex = get_cindex(y_hat, y)
-            self.log(f"{stage}/cindex", cindex, prog_bar=True, on_step=True, on_epoch=True, batch_size=y.shape[0])
+            self.log(f"{stage}/cindex", cindex, prog_bar=False, on_step=True, on_epoch=True, batch_size=y.shape[0])
         else:
             pass
         return loss
@@ -261,6 +264,7 @@ class LightningAffinityModule(LightningModule):
 @click.option("--max_epochs", type=int, default=100, show_default=True, help="Training epochs per seed.")
 @click.option("--device", type=str, default="0", show_default=True, help="CUDA device index to use.")
 @click.option("--nontruncated_affinity", is_flag=True, default=True, show_default=True, help="Whether to use non-truncated affinity values.")
+@click.option("--lr", type=float, default=3e-4, show_default=True, help="Learning rate for fine-tuning.")
 def main(
     split_method: str, 
     df_path: str, 
@@ -268,7 +272,8 @@ def main(
     num_seeds: int,
     max_epochs: int, 
     device: str, 
-    nontruncated_affinity: bool
+    nontruncated_affinity: bool,
+    lr: float
     ) -> None:  
     
     
@@ -358,6 +363,7 @@ def main(
     ckpt_dir = os.path.join(target_dir, "checkpoints")
 
     for combination in tqdm(combinations):
+    # for combination in tqdm([('abl1', 'AB-1010')]):
         print(f'Now we are doing {combination}')
         protein = combination[0]
         
@@ -406,23 +412,32 @@ def main(
 
         for model_seed in range(num_seeds):
             if os.path.exists(os.path.join(ckpt_dir, split_method, job_name, f"seed_{model_seed}.ckpt")):
-                print(f"Checkpoint for seed {model_seed} already exists at {os.path.join(ckpt_dir, split_method, job_name, f"seed_{model_seed}.ckpt")}, skipping training.")
+                print(f"Checkpoint for seed {model_seed} already exists at {os.path.join(ckpt_dir, split_method, job_name, f'seed_{model_seed}.ckpt')}, skipping training.")
                 continue
             pretrain_ckpt_path = os.path.join(ckpt_dir, "wt_mutation", f"seed_{model_seed}.ckpt")
             
-            model_module = LightningAffinityModule.load_from_checkpoint(pretrain_ckpt_path, map_location=torch.device("cpu"))
+            model_module = LightningAffinityModule.load_from_checkpoint(pretrain_ckpt_path, map_location=torch.device("cpu"), lr=lr)
             model_module.train()
             data_module = AffinityModuleDataModule(Datacfg)
+            
+            checkpoint_cb = ModelCheckpoint(
+                dirpath=os.path.join(ckpt_dir, split_method, job_name),
+                save_top_k=0,
+                save_last=True,
+                auto_insert_metric_name=False
+            )
             
             trainer = Trainer(
                 max_epochs=max_epochs,
                 devices=[int(device)],
                 accelerator="gpu",
+                callbacks=[checkpoint_cb],
                 log_every_n_steps=1
             )
         
             trainer.fit(model_module, datamodule=data_module)
-        
+            shutil.copy2(os.path.join(ckpt_dir, split_method, job_name, 'last.ckpt'), os.path.join(ckpt_dir, split_method, job_name, f'seed_{model_seed}.ckpt'))
+                                      
         all_test_mse_wt_groundtruth_baseline = []
         all_test_rp_wt_groundtruth_baseline = []
         all_test_cindex_wt_groundtruth_baseline = []
@@ -456,7 +471,7 @@ def main(
             all_set = AffinityModuleDataset(
                 split='all', 
                 df_path=Datacfg.df_path, 
-                target_dir=Datacfg.target_dir, 
+                target_dir=Path(Datacfg.target_dir), 
                 split_method=Datacfg.split_method, 
                 protein=Datacfg.protein,
                 mutation=Datacfg.mutation,
@@ -467,7 +482,7 @@ def main(
             test_set = AffinityModuleDataset(
                 split='test',
                 df_path=Datacfg.df_path,
-                target_dir=Datacfg.target_dir,
+                target_dir=Path(Datacfg.target_dir),
                 split_method=Datacfg.split_method,
                 protein=Datacfg.protein,
                 mutation=Datacfg.mutation,
@@ -478,7 +493,7 @@ def main(
             wt_all_set = AffinityModuleDataset(
                 split='wt_all',
                 df_path=Datacfg.df_path,
-                target_dir=Datacfg.target_dir, 
+                target_dir=Path(Datacfg.target_dir) , 
                 split_method=Datacfg.split_method, 
                 protein=Datacfg.protein,
                 mutation=Datacfg.mutation,
@@ -488,19 +503,24 @@ def main(
             wt_test_set = AffinityModuleDataset(
                 split='wt_test',
                 df_path=Datacfg.df_path,
-                target_dir=Datacfg.target_dir, 
+                target_dir=Path(Datacfg.target_dir),
                 split_method=Datacfg.split_method, 
                 protein=Datacfg.protein,
                 mutation=Datacfg.mutation,
                 drug=Datacfg.drug,
                 nontruncated_affinity=Datacfg.nontruncated_affinity
             )
-
-            all_loader = DataLoader(all_set, batch_size=len(all_set), shuffle=False)
-            test_loader = DataLoader(test_set, batch_size=len(test_set), shuffle=False)
-            wt_all_loader = DataLoader(wt_all_set, batch_size=len(wt_all_set), shuffle=False)
-            wt_test_loader = DataLoader(wt_test_set, batch_size=len(wt_test_set), shuffle=False)
             
+            trainer = Trainer(
+                devices=[int(device)],
+                accelerator="gpu"
+            )
+            
+            all_loader = DataLoader(all_set, batch_size=16, shuffle=False, collate_fn=collate)      
+            test_loader = DataLoader(test_set, batch_size=16, shuffle=False, collate_fn=collate)
+            wt_all_loader = DataLoader(wt_all_set, batch_size=16, shuffle=False, collate_fn=collate)
+            wt_test_loader = DataLoader(wt_test_set, batch_size=16, shuffle=False, collate_fn=collate)
+
             pretrain_ckpt_path = os.path.join(ckpt_dir, "wt_mutation", f"seed_{model_seed}.ckpt")
             pretrain_model_module = LightningAffinityModule.load_from_checkpoint(pretrain_ckpt_path, map_location=torch.device("cpu"))
               
@@ -517,8 +537,7 @@ def main(
 
             test_mse_original, test_rmse_original, test_rp_original, test_cindex_original, prediction_original, label = val(pretrain_model_module, test_loader, trainer)
             test_mse_finetuning, test_rmse_finetuning, test_rp_finetuning, test_cindex_finetuning, prediction_finetuning, label = val(finetuning_model_module, test_loader, trainer)
-            all_mse_original, all_rmse_original, all_rp_original, all_cindex_original, prediction_original_all, label_all = val(finetuning_model_module, all_loader, trainer)
-
+            all_mse_original, all_rmse_original, all_rp_original, all_cindex_original, prediction_original_all, label_all = val(pretrain_model_module, all_loader, trainer)
 
             if split_method == 'different_mutation_same_drug':
                 print(f'label: {label}')
@@ -741,7 +760,7 @@ def main(
     else:
         raise ValueError('split_method is not supported')
 
-    df.to_csv(f'result_finetuning_{split_method}_epoch{max_epochs}_lr{model_module.lr}.csv', index=False)
+    df.to_csv(f'result_finetuning_{split_method}_epoch{max_epochs}_lr{lr}.csv', index=False)
     
 if __name__ == "__main__":
     main()

@@ -45,6 +45,7 @@ class BoltzWriter(BasePredictionWriter):
         self.boltz2 = boltz2
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.write_embeddings = write_embeddings
+        self.failures_file = self.output_dir.parent / "oom_failures.txt"
 
     def write_on_batch_end(
         self,
@@ -59,6 +60,12 @@ class BoltzWriter(BasePredictionWriter):
         """Write the predictions to disk."""
         if prediction["exception"]:
             self.failed += 1
+            # Log the failed record ID so it can be skipped on rerun
+            records: list[Record] = batch["record"]
+            for record in records:
+                print(f"| OOM failure for record: {record.id}")  # noqa: T201
+                with self.failures_file.open("a") as f:
+                    f.write(f"{record.id}\n")
             return
 
         # Get the records
@@ -288,6 +295,7 @@ class BoltzAffinityWriter(BasePredictionWriter):
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.failures_file = self.output_dir.parent / "oom_failures_affinity.txt"
 
     def write_on_batch_end(
         self,
@@ -302,6 +310,12 @@ class BoltzAffinityWriter(BasePredictionWriter):
         """Write the predictions to disk."""
         if prediction["exception"]:
             self.failed += 1
+            # Log the failed record ID so it can be skipped on rerun
+            records: list[Record] = batch["record"]
+            for record in records:
+                print(f"| OOM failure (affinity) for record: {record.id}")  # noqa: T201
+                with self.failures_file.open("a") as f:
+                    f.write(f"{record.id}\n")
             return
         # Dump affinity summary
         affinity_summary = {}
@@ -379,6 +393,12 @@ class BoltzAffinityInputWriter(BasePredictionWriter):
         """Write the predictions to disk."""
         if prediction["exception"]:
             self.failed += 1
+            # Log the failed record ID so it can be skipped on rerun
+            records: list[Record] = batch["record"]
+            for record in records:
+                print(f"| OOM failure (affinity input) for record: {record.id}")  # noqa: T201
+                with (self.output_dir.parent.parent / "oom_failures_affinity.txt").open("a") as f:
+                    f.write(f"{record.id}\n")
             return
         # Dump affinity summary
         affinity_inputs = {}

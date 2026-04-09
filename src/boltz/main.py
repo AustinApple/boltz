@@ -320,6 +320,7 @@ def filter_inputs_structure(
     manifest: Manifest,
     outdir: Path,
     override: bool = False,
+    retry_failures: bool = False,
 ) -> Manifest:
     """Filter the manifest to only include missing predictions.
 
@@ -331,6 +332,8 @@ def filter_inputs_structure(
         The output directory.
     override: bool
         Whether to override existing predictions.
+    retry_failures: bool
+        Whether to retry previously OOM-failed predictions.
 
     Returns
     -------
@@ -345,9 +348,25 @@ def filter_inputs_structure(
     else:
         existing = set()
 
+    # Load OOM failures to skip
+    oom_failures_file = outdir / "oom_failures.txt"
+    oom_failed = set()
+    if oom_failures_file.exists() and not retry_failures:
+        with oom_failures_file.open() as f:
+            oom_failed = {line.strip() for line in f if line.strip()}
+        if oom_failed:
+            click.echo(
+                f"Skipping {len(oom_failed)} previously OOM-failed predictions. "
+                "Use --retry_failures to retry them."
+            )
+    elif retry_failures and oom_failures_file.exists():
+        # Clear the failures file so they will be retried
+        oom_failures_file.unlink()
+        click.echo("Cleared OOM failures log, will retry all failed predictions.")
+
     # Remove them from the input data
     if existing and not override:
-        manifest = Manifest([r for r in manifest.records if r.id not in existing])
+        manifest = Manifest([r for r in manifest.records if r.id not in existing and r.id not in oom_failed])
         msg = (
             f"Found some existing predictions ({len(existing)}), "
             f"skipping and running only the missing ones, "
@@ -358,6 +377,9 @@ def filter_inputs_structure(
     elif existing and override:
         msg = f"Found {len(existing)} existing predictions, will override."
         click.echo(msg)
+        manifest = Manifest([r for r in manifest.records if r.id not in oom_failed])
+    else:
+        manifest = Manifest([r for r in manifest.records if r.id not in oom_failed])
 
     return manifest
 
@@ -366,6 +388,7 @@ def filter_inputs_affinity(
     manifest: Manifest,
     outdir: Path,
     override: bool = False,
+    retry_failures: bool = False,
 ) -> Manifest:
     """Check the input data and output directory for affinity.
 
@@ -377,6 +400,8 @@ def filter_inputs_affinity(
         The output directory.
     override: bool
         Whether to override existing predictions.
+    retry_failures: bool
+        Whether to retry previously OOM-failed predictions.
 
     Returns
     -------
@@ -400,6 +425,21 @@ def filter_inputs_affinity(
         if not (outdir / "predictions" / r.id / f"pre_affinity_{r.id}.npz").exists()
     }
 
+    # Load OOM failures to skip
+    oom_failures_file = outdir / "oom_failures_affinity.txt"
+    oom_failed = set()
+    if oom_failures_file.exists() and not retry_failures:
+        with oom_failures_file.open() as f:
+            oom_failed = {line.strip() for line in f if line.strip()}
+        if oom_failed:
+            click.echo(
+                f"Skipping {len(oom_failed)} previously OOM-failed affinity predictions. "
+                "Use --retry_failures to retry them."
+            )
+    elif retry_failures and oom_failures_file.exists():
+        oom_failures_file.unlink()
+        click.echo("Cleared OOM affinity failures log, will retry all failed predictions.")
+
     # Remove them from the input data
     if existing and not override:
         num_skipped = len(existing)
@@ -414,7 +454,7 @@ def filter_inputs_affinity(
         msg = "Found existing affinity predictions, will override."
         click.echo(msg)
 
-    return Manifest([r for r in manifest.records if r.id not in existing and r.id not in failed])
+    return Manifest([r for r in manifest.records if r.id not in existing and r.id not in failed and r.id not in oom_failed])
 
 
 def compute_msa(
@@ -1054,6 +1094,11 @@ def cli() -> None:
     is_flag=True, 
     help="Save affinity module inputs.",
 )
+@click.option(
+    "--retry_failures",
+    is_flag=True,
+    help="Retry previously OOM-failed predictions instead of skipping them. Default is False.",
+)
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
@@ -1092,7 +1137,8 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     num_subsampled_msa: int = 1024,
     no_kernels: bool = False,
     write_embeddings: bool = False,
-    save_affinity_inputs: bool = False
+    save_affinity_inputs: bool = False,
+    retry_failures: bool = False,
 ) -> None:
     """Run predictions with Boltz."""
     # If cpu, write a friendly warning
@@ -1200,6 +1246,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         manifest=manifest,
         outdir=out_dir,
         override=override,
+        retry_failures=retry_failures,
     )
 
     # Load processed data
@@ -1358,6 +1405,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             manifest=manifest,
             outdir=out_dir,
             override=override,
+            retry_failures=retry_failures,
         )
         if not manifest_filtered.records:
             click.echo("Found existing affinity predictions for all inputs, skipping.")

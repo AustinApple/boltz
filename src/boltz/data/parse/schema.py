@@ -936,12 +936,31 @@ def token_spec_to_ids(
         return chain_to_idx[chain_name], residue_index_or_atom_name - 1
 
 
+def _load_failed_smiles(failed_smiles_path: Optional[Path] = None) -> set[str]:
+    """Load the set of previously failed SMILES from a file."""
+    if failed_smiles_path is None or not failed_smiles_path.exists():
+        return set()
+    with failed_smiles_path.open("r") as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def _log_failed_smiles(smiles: str, failed_smiles_path: Optional[Path] = None) -> None:
+    """Append a failed SMILES string to the log file."""
+    if failed_smiles_path is None:
+        return
+    failed = _load_failed_smiles(failed_smiles_path)
+    if smiles not in failed:
+        with failed_smiles_path.open("a") as f:
+            f.write(smiles + "\n")
+
+
 def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
     name: str,
     schema: dict,
     ccd: Mapping[str, Mol],
     mol_dir: Optional[Path] = None,
     boltz_2: bool = False,
+    failed_smiles_path: Optional[Path] = None,
 ) -> Target:
     """Parse a Boltz input yaml / json.
 
@@ -1225,10 +1244,21 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
         elif (entity_type == "ligand") and ("smiles" in items[0][entity_type]):
             seq = items[0][entity_type]["smiles"]
 
+            # Skip previously failed SMILES
+            failed_smiles = _load_failed_smiles(failed_smiles_path)
+            if seq in failed_smiles:
+                msg = f"Skipping previously failed SMILES: {seq}"
+                raise ValueError(msg)
+
             if affinity:
                 seq = standardize(seq)
 
             mol = AllChem.MolFromSmiles(seq)
+            if mol is None:
+                _log_failed_smiles(seq, failed_smiles_path)
+                msg = f"Failed to parse SMILES: {seq}"
+                raise ValueError(msg)
+
             mol = AllChem.AddHs(mol)
 
             # Set atom names
@@ -1236,6 +1266,7 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
             for atom, can_idx in zip(mol.GetAtoms(), canonical_order):
                 atom_name = atom.GetSymbol().upper() + str(can_idx + 1)
                 if len(atom_name) > 4:
+                    _log_failed_smiles(seq, failed_smiles_path)
                     msg = (
                         f"{seq} has an atom with a name longer than "
                         f"4 characters: {atom_name}."
@@ -1245,6 +1276,7 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
 
             success = compute_3d_conformer(mol)
             if not success:
+                _log_failed_smiles(seq, failed_smiles_path)
                 msg = f"Failed to compute 3D conformer for {seq}"
                 raise ValueError(msg)
 

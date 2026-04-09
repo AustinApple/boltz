@@ -349,7 +349,7 @@ def filter_inputs_structure(
         existing = set()
 
     # Load OOM failures to skip
-    oom_failures_file = outdir / "oom_failures.txt"
+    oom_failures_file = outdir / "processed" / "oom_failures.txt"
     oom_failed = set()
     if oom_failures_file.exists() and not retry_failures:
         with oom_failures_file.open() as f:
@@ -426,7 +426,7 @@ def filter_inputs_affinity(
     }
 
     # Load OOM failures to skip
-    oom_failures_file = outdir / "oom_failures_affinity.txt"
+    oom_failures_file = outdir / "processed" / "oom_failures_affinity.txt"
     oom_failed = set()
     if oom_failures_file.exists() and not retry_failures:
         with oom_failures_file.open() as f:
@@ -587,13 +587,14 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     processed_mols_dir: Path,
     structure_dir: Path,
     records_dir: Path,
+    failed_smiles_path: Optional[Path] = None,
 ) -> None:
     try:
         # Parse data
         if path.suffix in (".fa", ".fas", ".fasta"):
-            target = parse_fasta(path, ccd, mol_dir, boltz2)
+            target = parse_fasta(path, ccd, mol_dir, boltz2, failed_smiles_path)
         elif path.suffix in (".yml", ".yaml"):
-            target = parse_yaml(path, ccd, mol_dir, boltz2)
+            target = parse_yaml(path, ccd, mol_dir, boltz2, failed_smiles_path)
         elif path.is_dir():
             msg = f"Found directory {path} instead of .fasta or .yaml, skipping."
             raise RuntimeError(msg)  # noqa: TRY301
@@ -796,6 +797,7 @@ def process_inputs(
     processed_mols_dir = out_dir / "processed" / "mols"
     
     processed_affinity_module_inputs_dir = out_dir / "processed" / "affinity_module_inputs"
+    failed_smiles_path = out_dir / "processed" / "failed_smiles.txt"
     predictions_dir = out_dir / "predictions"
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -839,6 +841,7 @@ def process_inputs(
         processed_mols_dir=processed_mols_dir,
         structure_dir=structure_dir,
         records_dir=records_dir,
+        failed_smiles_path=failed_smiles_path,
     )
 
     # Parse input data

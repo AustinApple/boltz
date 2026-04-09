@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Optional
 
 from Bio import SeqIO
 from rdkit.Chem.rdchem import Mol
@@ -13,6 +14,7 @@ def parse_fasta(  # noqa: C901, PLR0912
     ccd: Mapping[str, Mol],
     mol_dir: Path,
     boltz2: bool = False,
+    failed_smiles_path: Optional[Path] = None,
 ) -> Target:
     """Parse a fasta file.
 
@@ -135,4 +137,4 @@ def parse_fasta(  # noqa: C901, PLR0912
     }
 
     name = path.stem
-    return parse_boltz_schema(name, data, ccd, mol_dir, boltz2)
+    return parse_boltz_schema(name, data, ccd, mol_dir, boltz2, failed_smiles_path)

@@ -1244,14 +1244,14 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
         elif (entity_type == "ligand") and ("smiles" in items[0][entity_type]):
             seq = items[0][entity_type]["smiles"]
 
+            if affinity:
+                seq = standardize(seq)
+            
             # Skip previously failed SMILES
             failed_smiles = _load_failed_smiles(failed_smiles_path)
             if seq in failed_smiles:
                 msg = f"Skipping previously failed SMILES: {seq}"
                 raise ValueError(msg)
-
-            if affinity:
-                seq = standardize(seq)
 
             mol = AllChem.MolFromSmiles(seq)
             if mol is None:

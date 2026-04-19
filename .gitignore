@@ -169,6 +169,9 @@ boltz_results_*/
 # code for DAVIS
 DAVIS/
 
+BindingDB/
+DAVIS_tmp/
+
 mols/
 *.npz
 BindingDB/

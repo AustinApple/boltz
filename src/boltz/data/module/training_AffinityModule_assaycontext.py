@@ -175,17 +175,19 @@ class AffinityModuleDataset(torch.utils.data.Dataset):
         """Initialize the training dataset."""
         super().__init__()
 
-        self.df = pd.read_csv(df_path)
-        self.target_dir = target_dir
+        sep = '\t' if str(df_path).endswith('.tsv') else ','
+        self.df = pd.read_csv(df_path, sep=sep)
+        self.target_dir = Path(target_dir)
         self.assay_embedding_model = assay_embedding_model
         self.split_method = split_method
 
-        # Read successful runs and include only them
-        success_path = Path('/data/mwu11/boltz/BindingDB/boltz_results_yaml_affinity_input/success.txt')
-        if success_path.exists():
-            with open(success_path, 'r') as f:
-                success_ids = set(line.strip() for line in f if line.strip())
-            self.df = self.df[self.df['BindingDB Reactant_set_id'].astype(str).isin(success_ids)].reset_index(drop=True)
+        # Keep rows whose record id has both affinity module inputs and assay context embedding available
+        affinity_dir = self.target_dir / "processed" / "affinity_module_inputs"
+        embedding_dir = self.target_dir / "processed" / "assay_context_embedding" / self.assay_embedding_model
+        ids = self.df['BindingDB Reactant_set_id'].astype(str)
+        has_inputs = ids.map(lambda rid: (affinity_dir / rid / f"affinity_input_{rid}.npz").exists())
+        has_embedding = ids.map(lambda rid: (embedding_dir / f"{rid}.pt").exists())
+        self.df = self.df[has_inputs & has_embedding].reset_index(drop=True)
 
         # exclude Kd involved inequality pairs
         self.df = self.df[~self.df['Kd (nM)'].astype(str).str.contains('[<>]', regex=True)]

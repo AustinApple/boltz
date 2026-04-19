@@ -171,6 +171,7 @@ DAVIS/
 
 mols/
 *.npz
+BindingDB/
 
 # lightning logs
 lightning_logs/

@@ -280,7 +280,7 @@ class LightningAffinityModule(LightningModule):
         }
 
 @click.command()
-@click.option("--hparams_yaml", type=click.Path(exists=True, dir_okay=False, path_type=str), default="/data/mwu11/boltz/DAVIS/boltz_results_affinity_input/boltz_results_yaml_affinity_input/lightning_logs/version_1/hparams.yaml", show_default=True, help="Path to Lightning hparams.yaml used to construct model.")
+@click.option("--hparams_yaml", type=click.Path(exists=True, dir_okay=False, path_type=str), default="/data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input/lightning_logs/version_1/hparams.yaml", show_default=True, help="Path to Lightning hparams.yaml used to construct model.")
 @click.option("--df_path", type=click.Path(exists=True, dir_okay=False, path_type=str), default="/data/mwu11/LLM_affinity/BindingDB/non_null_spr_itc_structured_description_subset.csv", show_default=True, help="Path to CSV with columns for constructing AffinityModuleDataModule (e.g., s/z/x/feats/assay_context/y).")
 @click.option("--target_dir", type=click.Path(file_okay=False, path_type=str), default="/data/mwu11/boltz/BindingDB/boltz_results_yaml_affinity_input", show_default=True, help="Directory with processed affinity inputs + where checkpoints are saved.")
 @click.option("--assay_context", type=bool, is_flag=True, help="Whether to use assay context as input to model.")

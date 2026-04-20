@@ -189,10 +189,23 @@ class AffinityModuleDataset(torch.utils.data.Dataset):
         has_embedding = ids.map(lambda rid: (embedding_dir / f"{rid}.pt").exists())
         self.df = self.df[has_inputs & has_embedding].reset_index(drop=True)
 
-        # exclude Kd involved inequality pairs
-        self.df = self.df[~self.df['Kd (nM)'].astype(str).str.contains('[<>]', regex=True)]
-        # convert Kd to pKd
-        self.df['y'] = -np.log10(self.df['Kd (nM)'].astype(float) * 1e-9)
+        # exclude inequality pairs across Kd / Ki / IC50
+        affinity_cols = ['Kd (nM)', 'Ki (nM)', 'IC50 (nM)']
+        for col in affinity_cols:
+            self.df = self.df[~self.df[col].astype(str).str.contains('[<>]', regex=True, na=False)]
+
+        values = self.df[affinity_cols].apply(pd.to_numeric, errors='coerce')
+        n_present = values.notna().sum(axis=1)
+        if (n_present > 1).any():
+            offending = self.df.loc[n_present > 1, 'BindingDB Reactant_set_id'].tolist()
+            raise ValueError(
+                f"Expected at most one of {affinity_cols} per row, "
+                f"found {(n_present > 1).sum()} rows with multiple: {offending[:10]}"
+            )
+
+        self.df = self.df[n_present == 1].reset_index(drop=True)
+        affinity_nm = self.df[affinity_cols].apply(pd.to_numeric, errors='coerce').sum(axis=1, min_count=1)
+        self.df['y'] = -np.log10(affinity_nm * 1e-9)
 
 
         self.split_frac = [0.7, 0.1, 0.2]  # train, val, test

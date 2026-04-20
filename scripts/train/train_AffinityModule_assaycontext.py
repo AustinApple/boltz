@@ -288,7 +288,7 @@ class LightningAffinityModule(LightningModule):
 @click.option("--assay_context_dim", type=int, default=128, show_default=True, help="Dimensionality of assay context vector input to model. Note: only set 768 for pubmedbert")
 @click.option("--assay_embedding_model", type=click.Choice(["qwen3", "pubmedbert"]), default="qwen3", show_default=True, help="Embedding model name for embedding assay context. Only used if --assay_context is set.")
 @click.option("--assay_embedding_injection_method", type=click.Choice(["dual_film", "concatenate_g_after_meanpooling"]), default="concatenate_g_after_meanpooling", show_default=True, help="Method for injecting assay context into model")
-@click.option("--num_seeds", type=int, default=1, show_default=True, help="Number of seeds to iterate over.")
+@click.option("--seeds", type=str, default="0", show_default=True, help="Comma-separated list of seeds to iterate over (e.g. '1,2,3').")
 @click.option("--split_method", type=click.Choice(["pair-level-random", "pmid-level-random"]), default="pair-level-random", show_default=True, help="Data split strategy: 'pair-level-random' splits rows randomly; 'pmid-level-random' groups all rows with the same PMID into the same partition.")
 @click.option("--max_epochs", type=int, default=50, show_default=True, help="Training epochs per seed.")
 @click.option("--device", type=str, default="0", show_default=True, help="CUDA device index to use.")
@@ -307,7 +307,7 @@ def main(
     assay_context_dim: int,
     assay_embedding_model: str,
     assay_embedding_injection_method: str,
-    num_seeds: int,
+    seeds: str,
     split_method: str,
     max_epochs: int,
     device: str,
@@ -329,8 +329,10 @@ def main(
     all_test_rp: list[float] = []
     all_test_cindex: list[float] = []
 
+    seed_list = [int(s) for s in seeds.split(",") if s.strip()]
+
     # Training phase
-    for seed in range(num_seeds):
+    for seed in seed_list:
         Datacfg = DataConfig(
             df_path=df_path,
             target_dir=target_dir,
@@ -402,7 +404,7 @@ def main(
             wandb_logger.experiment.finish()
 
     # Evaluation phase
-    for seed in range(num_seeds):
+    for seed in seed_list:
         Datacfg = DataConfig(
             df_path=df_path,
             target_dir=target_dir,

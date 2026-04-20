@@ -196,13 +196,7 @@ class AffinityModuleDataset(torch.utils.data.Dataset):
 
         values = self.df[affinity_cols].apply(pd.to_numeric, errors='coerce')
         n_present = values.notna().sum(axis=1)
-        if (n_present > 1).any():
-            offending = self.df.loc[n_present > 1, 'BindingDB Reactant_set_id'].tolist()
-            raise ValueError(
-                f"Expected at most one of {affinity_cols} per row, "
-                f"found {(n_present > 1).sum()} rows with multiple: {offending[:10]}"
-            )
-
+        # keep rows with exactly one of Kd / Ki / IC50 populated
         self.df = self.df[n_present == 1].reset_index(drop=True)
         affinity_nm = self.df[affinity_cols].apply(pd.to_numeric, errors='coerce').sum(axis=1, min_count=1)
         self.df['y'] = -np.log10(affinity_nm * 1e-9)

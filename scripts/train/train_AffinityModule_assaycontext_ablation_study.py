@@ -46,7 +46,14 @@ from train_AffinityModule_assaycontext import LightningAffinityModule  # noqa: E
 
 # Qwen3-Embedding-8B / sentence-transformers live in the llm_affinity env, not the boltz env,
 # so the embedding pass is run as a subprocess with that interpreter.
-EMBED_PYTHON = "/data/mwu11/miniconda3/envs/llm_affinity/bin/python"
+_EMBED_PYTHON_CANDIDATES = (
+    "/data/mwu11/miniconda3/envs/llm_affinity/bin/python",
+    "/data/mwu11/anaconda3/envs/llm_affinity/bin/python",
+)
+EMBED_PYTHON = next(
+    (p for p in _EMBED_PYTHON_CANDIDATES if Path(p).exists()),
+    _EMBED_PYTHON_CANDIDATES[0],
+)
 
 from boltz.data.module.training_AffinityModule_assaycontext import (  # noqa: E402
     AffinityModuleDataModule,

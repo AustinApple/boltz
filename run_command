@@ -1,0 +1,464 @@
+nohup python /data/mwu11/boltz/scripts/generate_msa.py /data/mwu11/boltz/BindingDB/fpa/uniprot_to_sequence.json --out_dir /data/mwu11/boltz/BindingDB/fpa/input/msa --workers 2 > run_fpa_msa_generation.log 2>&1 &
+nohup bash -c "CUDA_VISIBLE_DEVICES=0,1,2,3,4 boltz predict input/yaml_affinity_input --cache /data/mwu11/boltz --devices 5 --no_kernels --num_workers 1 --save_affinity_inputs" > run_fpa.log 2>&1 &
+
+
+nohup bash -c "CUDA_VISIBLE_DEVICES=5,6,7 boltz predict input/yaml_affinity_input --cache /data/mwu11/boltz --devices 3 --no_kernels --num_workers 1 --save_affinity_inputs" > run_rba.log 2>&1 &
+
+
+
+
+
+
+# test
+CUDA_VISIBLE_DEVICES=6 boltz predict examples/affinity.yaml --cache /data/mwu11/boltz --no_kernels --save_affinity_inputs --use_msa_server --seed 42
+
+# test: compute and extract affinity input
+
+CUDA_VISIBLE_DEVICES=6 python scripts/extract_affinity_inputs.py boltz_results_affinity --cache /data/mwu11/boltz --devices 1 --seed 42
+
+
+
+nohup bash -c "CUDA_VISIBLE_DEVICES=0,1,2,3,6 python scripts/extract_affinity_inputs.py BindingDB/rba/boltz_results_yaml_affinity_input --cache /data/mwu11/boltz --devices 5" > run_rba_affinity_input_extraction.log 2>&1 &
+
+## extract affinity g 
+
+nohup bash -c "CUDA_VISIBLE_DEVICES=0 python scripts/extract_affinity_g.py --out_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input" > run_spr_affinity_g_extraction.log 2>&1 &
+nohup bash -c "CUDA_VISIBLE_DEVICES=6 python scripts/extract_affinity_g.py --out_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input" > run_fpa_affinity_g_extraction.log 2>&1 &
+nohup bash -c "CUDA_VISIBLE_DEVICES=7 python scripts/extract_affinity_g.py --out_dir /data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input" > run_itc_affinity_g_extraction.log 2>&1 &
+nohup bash -c "CUDA_VISIBLE_DEVICES=7 python scripts/extract_affinity_g.py --out_dir /data/mwu11/boltz/BindingDB/rba/boltz_results_yaml_affinity_input" > run_rba_affinity_g_extraction.log 2>&1 &
+
+
+nohup python scripts/train/train_AffinityModule_assaycontext.py --df_path /data/mwu11/boltz/BindingDB/spr/BindingDB_spr_kd.tsv --target_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input --split_method "pmid-level-random" --max_epochs 100 --patience 20 --device 3 --seeds 0,1,2,3,4 --use_wandb --wandb_name spr_assay_baseline_pmid_split > spr_train_AffinityModule_assaycontext_baseline_pmid_split.log 2>&1 &
+
+
+
+### itc 
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/itc/BindingDB_itc.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input \
+  --assay_type itc \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name itc_baseline_g \
+  > itc_baseline_g.log 2>&1 &
+
+# 2. Context-aware f(g || c) — g concatenated with real ITC context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/itc/BindingDB_itc.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input \
+  --assay_type itc \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name itc_context-aware_g-c \
+  > itc_context_aware_g_c.log 2>&1 &
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/itc/BindingDB_itc.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input \
+  --assay_type itc \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 2 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name itc_context-only_c \
+  > itc_context_only_c.log 2>&1 &
+
+
+  ### spr
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/spr/BindingDB_spr.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input \
+  --assay_type spr \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name spr_baseline_g \
+  > spr_baseline_g.log 2>&1 &
+
+# 2. Context-aware f(g || c) — g concatenated with real ITC context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/spr/BindingDB_spr.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input \
+  --assay_type spr \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name spr_context-aware_g-c \
+  > spr_context_aware_g_c.log 2>&1 &
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/spr/BindingDB_spr.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input \
+  --assay_type spr \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 2 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name spr_context-only_c \
+  > spr_context_only_c.log 2>&1 &
+
+
+
+  ### rba
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/rba/BindingDB_rba.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/rba/boltz_results_yaml_affinity_input \
+  --assay_type rba \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name rba_baseline_g \
+  > rba_baseline_g.log 2>&1 &  
+
+
+# 2. Context-aware f(g || c) — g concatenated with real ITC context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/rba/BindingDB_rba.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/rba/boltz_results_yaml_affinity_input \
+  --assay_type rba \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name rba_context-aware_g-c \
+  > rba_context_aware_g_c.log 2>&1 & 
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/rba/BindingDB_rba.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/rba/boltz_results_yaml_affinity_input \
+  --assay_type rba \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 2 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name rba_context-only_c \
+  > rba_context_only_c.log 2>&1 &  
+
+
+#### fpa
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/fpa/BindingDB_fpa.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --assay_type fpa \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name fpa_context-aware_g-c \
+  > fpa_context_aware_g_c.log 2>&1 &
+
+# 2. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/fpa/BindingDB_fpa.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --assay_type fpa \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name fpa_context-only_c \
+  > fpa_context_only_c.log 2>&1 &   
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/fpa/BindingDB_fpa.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --assay_type fpa \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name fpa_baseline_g \
+  > fpa_baseline_g.log 2>&1 &  
+
+
+
+
+
+
+  nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/fpa/BindingDB_fpa.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --assay_type fpa \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 128 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name fpa_context-aware_g-c \
+  > fpa_context_aware_g_c_dim_128.log 2>&1 &
+
+
+
+
+
+# 1. Joint baseline f(g) — unchanged (no context consumed, flag has no effect)
+nohup python scripts/train/train_AffinityGHead.py \
+  --itc_df BindingDB/itc/BindingDB_itc.tsv --itc_dir BindingDB/itc/boltz_results_yaml_affinity_input \
+  --spr_df BindingDB/spr/BindingDB_spr.tsv --spr_dir BindingDB/spr/boltz_results_yaml_affinity_input \
+  --rba_df BindingDB/rba/BindingDB_rba.tsv --rba_dir BindingDB/rba/boltz_results_yaml_affinity_input \
+  --fpa_df BindingDB/fpa/BindingDB_fpa.tsv --fpa_dir BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name joint_baseline_g \
+  > joint_baseline_g.log 2>&1 &
+
+# 2. Joint context-aware f(g || c) — real Qwen3 embeddings for every assay (ITC included)
+nohup python scripts/train/train_AffinityGHead.py \
+  --itc_df BindingDB/itc/BindingDB_itc.tsv --itc_dir BindingDB/itc/boltz_results_yaml_affinity_input \
+  --spr_df BindingDB/spr/BindingDB_spr.tsv --spr_dir BindingDB/spr/boltz_results_yaml_affinity_input \
+  --rba_df BindingDB/rba/BindingDB_rba.tsv --rba_dir BindingDB/rba/boltz_results_yaml_affinity_input \
+  --fpa_df BindingDB/fpa/BindingDB_fpa.tsv --fpa_dir BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name joint_context-aware_g-c \
+  > joint_context_aware_g_c.log 2>&1 &
+
+# 3. Joint context-only f(c) — real Qwen3 embeddings for every assay (ITC included)
+nohup python scripts/train/train_AffinityGHead.py \
+  --itc_df BindingDB/itc/BindingDB_itc.tsv --itc_dir BindingDB/itc/boltz_results_yaml_affinity_input \
+  --spr_df BindingDB/spr/BindingDB_spr.tsv --spr_dir BindingDB/spr/boltz_results_yaml_affinity_input \
+  --rba_df BindingDB/rba/BindingDB_rba.tsv --rba_dir BindingDB/rba/boltz_results_yaml_affinity_input \
+  --fpa_df BindingDB/fpa/BindingDB_fpa.tsv --fpa_dir BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4 --split_method "pmid-level-random" \
+  --device 2 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name joint_context-only_c \
+  > joint_context_only_c.log 2>&1 &
+
+
+
+
+
+
+
+### itc 
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/itc/BindingDB_itc.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input \
+  --assay_type itc \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name itc_baseline_g \
+  > itc_baseline_g_n10.log 2>&1 &
+
+# 2. Context-aware f(g || c) — g concatenated with real ITC context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/itc/BindingDB_itc.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input \
+  --assay_type itc \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name itc_context-aware_g-c \
+  > itc_context_aware_g_c_n10.log 2>&1 &
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/itc/BindingDB_itc.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input \
+  --assay_type itc \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name itc_context-only_c \
+  > itc_context_only_c_n10.log 2>&1 &
+
+
+  ### spr
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/spr/BindingDB_spr.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input \
+  --assay_type spr \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name spr_baseline_g \
+  > spr_baseline_g_n10.log 2>&1 &
+
+# 2. Context-aware f(g || c) — g concatenated with real ITC context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/spr/BindingDB_spr.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input \
+  --assay_type spr \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name spr_context-aware_g-c \
+  > spr_context_aware_g_c_n10.log 2>&1 &
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/spr/BindingDB_spr.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/spr/boltz_results_yaml_affinity_input \
+  --assay_type spr \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 2 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name spr_context-only_c \
+  > spr_context_only_c_n10.log 2>&1 &
+
+
+
+  ### rba
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/rba/BindingDB_rba.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/rba/boltz_results_yaml_affinity_input \
+  --assay_type rba \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name rba_baseline_g \
+  > rba_baseline_g_n10.log 2>&1 &  
+
+
+# 2. Context-aware f(g || c) — g concatenated with real ITC context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/rba/BindingDB_rba.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/rba/boltz_results_yaml_affinity_input \
+  --assay_type rba \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name rba_context-aware_g-c \
+  > rba_context_aware_g_c_n10.log 2>&1 & 
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/rba/BindingDB_rba.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/rba/boltz_results_yaml_affinity_input \
+  --assay_type rba \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name rba_context-only_c \
+  > rba_context_only_c_n10.log 2>&1 &  
+
+
+#### fpa
+# 1. Baseline f(g) — g only, no context
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/fpa/BindingDB_fpa.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --assay_type fpa \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name fpa_context-aware_g-c \
+  > fpa_context_aware_g_c_n10.log 2>&1 &
+
+# 2. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/fpa/BindingDB_fpa.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --assay_type fpa \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name fpa_context-only_c \
+  > fpa_context_only_c_n10.log 2>&1 &   
+
+# 3. Context-only f(c) — real ITC context, no g
+nohup python scripts/train/train_AffinityGHead.py \
+  --df_path /data/mwu11/boltz/BindingDB/fpa/BindingDB_fpa.tsv \
+  --target_dir /data/mwu11/boltz/BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --assay_type fpa \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name fpa_baseline_g \
+  > fpa_baseline_g_n10.log 2>&1 &  
+
+
+
+
+
+# 1. Joint baseline f(g) — unchanged (no context consumed, flag has no effect)
+nohup python scripts/train/train_AffinityGHead.py \
+  --itc_df BindingDB/itc/BindingDB_itc.tsv --itc_dir BindingDB/itc/boltz_results_yaml_affinity_input \
+  --spr_df BindingDB/spr/BindingDB_spr.tsv --spr_dir BindingDB/spr/boltz_results_yaml_affinity_input \
+  --rba_df BindingDB/rba/BindingDB_rba.tsv --rba_dir BindingDB/rba/boltz_results_yaml_affinity_input \
+  --fpa_df BindingDB/fpa/BindingDB_fpa.tsv --fpa_dir BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --g_module_key affinity_module1 \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 0 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name joint_baseline_g \
+  > joint_baseline_g_n10.log 2>&1 &
+
+# 2. Joint context-aware f(g || c) — real Qwen3 embeddings for every assay (ITC included)
+nohup python scripts/train/train_AffinityGHead.py \
+  --itc_df BindingDB/itc/BindingDB_itc.tsv --itc_dir BindingDB/itc/boltz_results_yaml_affinity_input \
+  --spr_df BindingDB/spr/BindingDB_spr.tsv --spr_dir BindingDB/spr/boltz_results_yaml_affinity_input \
+  --rba_df BindingDB/rba/BindingDB_rba.tsv --rba_dir BindingDB/rba/boltz_results_yaml_affinity_input \
+  --fpa_df BindingDB/fpa/BindingDB_fpa.tsv --fpa_dir BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --g_module_key affinity_module1 \
+  --assay_context --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name joint_context-aware_g-c \
+  > joint_context_aware_g_c_n10.log 2>&1 &
+
+# 3. Joint context-only f(c) — real Qwen3 embeddings for every assay (ITC included)
+nohup python scripts/train/train_AffinityGHead.py \
+  --itc_df BindingDB/itc/BindingDB_itc.tsv --itc_dir BindingDB/itc/boltz_results_yaml_affinity_input \
+  --spr_df BindingDB/spr/BindingDB_spr.tsv --spr_dir BindingDB/spr/boltz_results_yaml_affinity_input \
+  --rba_df BindingDB/rba/BindingDB_rba.tsv --rba_dir BindingDB/rba/boltz_results_yaml_affinity_input \
+  --fpa_df BindingDB/fpa/BindingDB_fpa.tsv --fpa_dir BindingDB/fpa/boltz_results_yaml_affinity_input \
+  --g_module_key affinity_module1 \
+  --assay_context --no_g --assay_context_dim 4096 --assay_embedding_model qwen3 \
+  --null_context_assays "" \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --split_method "pmid-level-random" \
+  --device 1 --max_epochs 100 --patience 20 \
+  --use_wandb --wandb_name joint_context-only_c \
+  > joint_context_only_c_n10.log 2>&1 &
+
+
+
+## ablation study
+nohup bash -c "CUDA_VISIBLE_DEVICES=3 python scripts/train/train_AffinityModule_assaycontext_ablation_study.py --assay_type itc --seeds 0,1,2,3,4,5,6,7,8,9" > itc_assay_context_ablation_study.log 2>&1 &
+nohup bash -c "CUDA_VISIBLE_DEVICES=3 python scripts/train/train_AffinityModule_assaycontext_ablation_study.py --assay_type itc --seeds 0,1,2,3,4,5,6,7,8,9" --skip_embedding > itc_assay_context_ablation_study.log 2>&1 &

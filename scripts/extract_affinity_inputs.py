@@ -30,9 +30,11 @@ The script expects the standard boltz output directory layout:
 """
 
 import gc
+import multiprocessing as mp
 import os
 import warnings
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
@@ -44,7 +46,9 @@ from pytorch_lightning.callbacks import BasePredictionWriter
 from pytorch_lightning.strategies import DDPStrategy
 from torch import Tensor
 
-from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
+from boltz.data.crop.affinity import AffinityCropper
+from boltz.data.module.inferencev2 import Boltz2InferenceDataModule, load_input
+from boltz.data.tokenize.boltz2 import Boltz2Tokenizer
 from boltz.data.types import Manifest, Record
 from boltz.main import (
     Boltz2DiffusionParams,
@@ -54,6 +58,36 @@ from boltz.main import (
     get_cache_path,
 )
 from boltz.model.models.boltz2 import Boltz2
+
+
+def _prescan_record(
+    record: Record,
+    target_dir: Path,
+    msa_dir: Path,
+    constraints_dir: Optional[Path],
+    template_dir: Optional[Path],
+    extra_mols_dir: Optional[Path],
+) -> tuple[str, bool, str]:
+    """Run tokenize + AffinityCropper on a single record (CPU only).
+
+    Returns (record_id, ok, error_message). ok=False means the record
+    cannot be processed and its pre_affinity file should be removed.
+    """
+    try:
+        input_data = load_input(
+            record=record,
+            target_dir=target_dir,
+            msa_dir=msa_dir,
+            constraints_dir=constraints_dir,
+            template_dir=template_dir,
+            extra_mols_dir=extra_mols_dir,
+            affinity=True,
+        )
+        tokenized = Boltz2Tokenizer().tokenize(input_data)
+        AffinityCropper().crop(tokenized, max_tokens=256, max_atoms=2048)
+    except Exception as e:  # noqa: BLE001
+        return record.id, False, f"{type(e).__name__}: {e}"
+    return record.id, True, ""
 
 
 class AffinityInputExtractor(BasePredictionWriter):
@@ -129,7 +163,24 @@ class AffinityInputExtractor(BasePredictionWriter):
 )
 @click.option("--devices", type=int, default=1, help="Number of GPU devices.")
 @click.option("--accelerator", type=click.Choice(["gpu", "cpu"]), default="gpu")
-@click.option("--num_workers", type=int, default=2, help="Dataloader workers.")
+@click.option("--num_workers", type=int, default=1, help="Dataloader workers.")
+@click.option(
+    "--prescan_workers",
+    type=int,
+    default=8,
+    help="Parallel CPU workers for the pre-scan that drops records that crop empty.",
+)
+@click.option(
+    "--no_prescan",
+    is_flag=True,
+    help="Skip the pre-scan step that removes pre_affinity files for records that crop empty.",
+)
+@click.option(
+    "--delete_bad",
+    is_flag=True,
+    default=True,
+    help="Delete pre_affinity files for records that fail the pre-scan (default: on).",
+)
 @click.option("--recycling_steps", type=int, default=5)
 @click.option("--sampling_steps", type=int, default=200)
 @click.option("--diffusion_samples", type=int, default=5)
@@ -149,6 +200,9 @@ def main(
     devices: int,
     accelerator: str,
     num_workers: int,
+    prescan_workers: int,
+    no_prescan: bool,
+    delete_bad: bool,
     recycling_steps: int,
     sampling_steps: int,
     diffusion_samples: int,
@@ -201,6 +255,73 @@ def main(
     if not records_to_run:
         click.echo("No records to process (all either missing pre_affinity or already extracted).")
         return
+
+    if not no_prescan:
+        predictions_dir = out_dir / "predictions"
+        msa_dir = processed_dir / "msa"
+        constraints_dir = (
+            (processed_dir / "constraints")
+            if (processed_dir / "constraints").exists()
+            else None
+        )
+        template_dir = (
+            (processed_dir / "templates")
+            if (processed_dir / "templates").exists()
+            else None
+        )
+        extra_mols_dir = (
+            (processed_dir / "mols") if (processed_dir / "mols").exists() else None
+        )
+
+        worker = partial(
+            _prescan_record,
+            target_dir=predictions_dir,
+            msa_dir=msa_dir,
+            constraints_dir=constraints_dir,
+            template_dir=template_dir,
+            extra_mols_dir=extra_mols_dir,
+        )
+
+        click.echo(
+            f"Pre-scanning {len(records_to_run)} records with "
+            f"{prescan_workers} workers (tokenize + crop)..."
+        )
+
+        bad_ids: dict[str, str] = {}
+        n = len(records_to_run)
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(prescan_workers) as pool:
+            for i, (rid, ok, err) in enumerate(
+                pool.imap_unordered(worker, records_to_run, chunksize=8), start=1
+            ):
+                if not ok:
+                    bad_ids[rid] = err
+                if i % 500 == 0 or i == n:
+                    click.echo(
+                        f"  pre-scan {i}/{n} ({len(bad_ids)} bad so far)"
+                    )
+
+        if bad_ids:
+            click.echo(f"Pre-scan dropped {len(bad_ids)} records:")
+            for rid, err in list(bad_ids.items())[:20]:
+                click.echo(f"  {rid}: {err}")
+            if len(bad_ids) > 20:
+                click.echo(f"  ... and {len(bad_ids) - 20} more")
+
+            if delete_bad:
+                removed = 0
+                for rid in bad_ids:
+                    p = predictions_dir / rid / f"pre_affinity_{rid}.npz"
+                    if p.exists():
+                        p.unlink()
+                        removed += 1
+                click.echo(f"Deleted {removed} pre_affinity files.")
+
+            records_to_run = [r for r in records_to_run if r.id not in bad_ids]
+
+        if not records_to_run:
+            click.echo("No records remain after pre-scan.")
+            return
 
     click.echo(f"Extracting affinity inputs for {len(records_to_run)} records.")
 

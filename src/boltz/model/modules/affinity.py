@@ -208,7 +208,6 @@ class AffinityHeadsTransformer(nn.Module):
         g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
             torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7
         )
-
         g = self.affinity_out_mlp(g)
 
         affinity_pred_value = self.to_affinity_pred_value(g).reshape(-1, 1)

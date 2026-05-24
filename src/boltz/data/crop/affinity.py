@@ -152,6 +152,14 @@ class AffinityCropper(Cropper):
             # Add protein indices
             cropped_protein.update(new_indices - ligand_ids)
 
+        if not cropped:
+            msg = (
+                "AffinityCropper produced empty crop: ligand chain alone exceeds "
+                f"max_tokens={max_tokens}, max_atoms={max_atoms}, or "
+                f"max_tokens_protein={self.max_tokens_protein}"
+            )
+            raise ValueError(msg)
+
         # Get the cropped tokens sorted by index
         token_data = token_data[sorted(cropped)]
 

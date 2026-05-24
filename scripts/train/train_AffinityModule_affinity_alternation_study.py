@@ -285,7 +285,7 @@ class LightningAffinityModule(LightningModule):
 @click.option("--mmseqs_cluster_path", type=click.Path(exists=True, dir_okay=False, path_type=str), default="/data/mwu11/DAVIS-complete/data/davis_complete/davis_complete_id50_cluster.tsv", show_default=True, help="Path to mmseqs seq cluster file.")
 @click.option("--target_dir", type=click.Path(file_okay=False, path_type=str), default="/data/mwu11/boltz/DAVIS/boltz_results_affinity_input/boltz_results_yaml_affinity_input", show_default=True, help="Directory with processed affinity inputs + where checkpoints are saved.")
 @click.option("--num_seeds", type=int, default=5, show_default=True, help="Number of seeds to iterate over.")
-@click.option("--max_epochs", type=int, default=100, show_default=True, help="Training epochs per seed.")
+@click.option("--max_epochs", type=int, default=50, show_default=True, help="Training epochs per seed.")
 @click.option("--device", type=str, default="0", show_default=True, help="CUDA device index to use.")
 @click.option("--batch_size", type=int, default=64, show_default=True, help="Batch size.")
 @click.option("--patience", type=int, default=5, show_default=True, help="Early stopping patience (epochs).")

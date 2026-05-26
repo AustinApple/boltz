@@ -126,18 +126,31 @@ def build_augmented_json(
 
 
 def _needed_reactant_ids(df_path: Path, target_dir: Path, extraction_dir: Path) -> list[str]:
-    """Reactant ids that have a precomputed affinity input and an extraction JSON."""
+    """Reactant ids that the training DataModule will actually use.
+
+    Mirrors AffinityModuleDataset's row filter so we don't waste embedding compute on rows
+    that get dropped at training time:
+      - precomputed affinity input present
+      - extraction JSON present
+      - no inequality ('<' or '>') in Kd / Ki / IC50
+      - exactly one of Kd / Ki / IC50 populated
+    """
     sep = "\t" if str(df_path).endswith(".tsv") else ","
-    df = pd.read_csv(df_path, sep=sep)
-    ids = df["BindingDB Reactant_set_id"].astype(str).unique().tolist()
+    df = pd.read_csv(df_path, sep=sep, low_memory=False)
+
+    affinity_cols = ["Kd (nM)", "Ki (nM)", "IC50 (nM)"]
+    for col in affinity_cols:
+        df = df[~df[col].astype(str).str.contains("[<>]", regex=True, na=False)]
+    values = df[affinity_cols].apply(pd.to_numeric, errors="coerce")
+    df = df[values.notna().sum(axis=1) == 1]
+
     affinity_dir = target_dir / "processed" / "affinity_module_inputs"
-    needed = []
-    for rid in ids:
-        has_input = (affinity_dir / rid / f"affinity_input_{rid}.npz").exists()
-        has_json = (extraction_dir / f"{rid}.json").exists()
-        if has_input and has_json:
-            needed.append(rid)
-    return needed
+    ids = df["BindingDB Reactant_set_id"].astype(str).unique().tolist()
+    return [
+        rid for rid in ids
+        if (affinity_dir / rid / f"affinity_input_{rid}.npz").exists()
+        and (extraction_dir / f"{rid}.json").exists()
+    ]
 
 
 def _load_entries(reactant_ids: list[str], extraction_dir: Path) -> dict[str, dict]:
@@ -168,13 +181,16 @@ def build_ablation_embeddings(
     df_path: Optional[Path] = None,
     extraction_dir: Optional[Path] = None,
     schema_path: Optional[Path] = None,
-    fields: Optional[list[str]] = None,
+    variants: Optional[list[str]] = None,
     batch_size: int = 128,
     verify_baseline: bool = True,
 ) -> list[str]:
-    """Generate and cache masked-JSON embeddings for every ablation variant.
+    """Generate and cache masked-JSON embeddings for the requested ablation variants.
 
-    Returns the list of variant names produced (``baseline`` first, then each field).
+    ``variants`` is the **exact** list to produce. Each item is either ``"baseline"``,
+    ``"assay_type"``, or a dotted ``structured_description`` leaf path. When ``None``, the
+    default is the full study set: baseline + every leaf field + assay_type.
+
     Embeddings land in ``target_dir/processed/assay_context_embedding/ablation_<variant>/``;
     masked JSON in ``.../assay_context_embedding/masked_json/<variant>/``.
     """
@@ -185,8 +201,8 @@ def build_ablation_embeddings(
     schema_path = Path(schema_path or paths["schema"])
     assay_label = ASSAY_LABELS[assay_type]
 
-    leaf_fields = fields if fields is not None else enumerate_leaf_fields(schema_path)
-    variants = ["baseline", *leaf_fields, ASSAY_TYPE_VARIANT]
+    if variants is None:
+        variants = ["baseline", *enumerate_leaf_fields(schema_path), ASSAY_TYPE_VARIANT]
 
     reactant_ids = _needed_reactant_ids(df_path, target_dir, extraction_dir)
     print(f"[ablation_embed] {assay_type}: {len(reactant_ids)} reactants with inputs + extraction JSON")
@@ -236,7 +252,7 @@ def build_ablation_embeddings(
     del model
     torch.cuda.empty_cache()
 
-    if verify_baseline:
+    if verify_baseline and "baseline" in variants:
         _verify_baseline(emb_root, reactant_ids)
     return variants
 
@@ -298,19 +314,20 @@ def _verify_baseline(emb_root: Path, reactant_ids: list[str], min_cosine: float 
 @click.command()
 @click.option("--assay_type", required=True, type=click.Choice(list(ASSAY_LABELS.keys())))
 @click.option("--batch_size", default=128, show_default=True, type=int)
-@click.option("--fields", type=str, default=None,
-              help="Comma-separated subset of structured_description leaf fields to embed "
-                   "(default: all). 'baseline' and 'assay_type' variants are always produced.")
+@click.option("--variants", type=str, default=None,
+              help="Comma-separated exact list of variants to produce (e.g. 'baseline', "
+                   "'baseline,assay_type', 'protein.name'). Default: baseline + every leaf "
+                   "field + assay_type.")
 @click.option("--no_verify", is_flag=True, default=False, help="Skip baseline-vs-qwen3 verification.")
-def main(assay_type: str, batch_size: int, fields: Optional[str], no_verify: bool) -> None:
+def main(assay_type: str, batch_size: int, variants: Optional[str], no_verify: bool) -> None:
     """Standalone caching entry point (run with the llm_affinity conda env)."""
-    field_list = None
-    if fields:
-        field_list = [f.strip() for f in fields.split(",") if f.strip()]
-    variants = build_ablation_embeddings(
-        assay_type, fields=field_list, batch_size=batch_size, verify_baseline=not no_verify
+    variant_list = None
+    if variants:
+        variant_list = [v.strip() for v in variants.split(",") if v.strip()]
+    produced = build_ablation_embeddings(
+        assay_type, variants=variant_list, batch_size=batch_size, verify_baseline=not no_verify
     )
-    print(f"[ablation_embed] done: {len(variants)} variants for {assay_type}")
+    print(f"[ablation_embed] done: {len(produced)} variants for {assay_type}")
 
 
 if __name__ == "__main__":

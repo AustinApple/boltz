@@ -298,22 +298,23 @@ def main(
     if ablation_fields:
         requested = [f.strip() for f in ablation_fields.split(",") if f.strip()]
 
-    if not skip_embedding:
-        # Run the Qwen3 embedding pass via the llm_affinity env (has sentence-transformers).
-        cmd = [
-            EMBED_PYTHON, str(_THIS_DIR / "ablation_embed.py"),
-            "--assay_type", assay_type, "--batch_size", str(embed_batch_size),
-        ]
-        if requested is not None:
-            fields = [f for f in requested if f not in ("baseline", ASSAY_TYPE_VARIANT)]
-            if fields:
-                cmd += ["--fields", ",".join(fields)]
-        print(f"[ablation] caching embeddings: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
+    full_variants = ["baseline", *enumerate_leaf_fields(paths["schema"]), ASSAY_TYPE_VARIANT]
+    variants = full_variants if requested is None else (
+        ["baseline"] + [v for v in full_variants if v in requested and v != "baseline"]
+    )
 
-    variants = ["baseline", *enumerate_leaf_fields(paths["schema"]), ASSAY_TYPE_VARIANT]
-    if requested is not None:
-        variants = ["baseline"] + [v for v in variants if v in requested and v != "baseline"]
+    if not skip_embedding:
+        # Only non-baseline variants need fresh embeddings; baseline training reads qwen3/ directly.
+        to_embed = [v for v in variants if v != "baseline"]
+        if to_embed:
+            cmd = [
+                EMBED_PYTHON, str(_THIS_DIR / "ablation_embed.py"),
+                "--assay_type", assay_type, "--batch_size", str(embed_batch_size),
+                "--variants", ",".join(to_embed),
+                "--no_verify",
+            ]
+            print(f"[ablation] caching embeddings: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
 
     print(f"[ablation] {assay_type}: {len(variants)} variants to train: {variants}")
 

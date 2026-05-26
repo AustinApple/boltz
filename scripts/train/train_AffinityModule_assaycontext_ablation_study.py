@@ -1,13 +1,17 @@
-"""Leaf-field ablation study for the assay-context embedding.
+"""Leaf-field ablation study for the assay-context embedding (test-time ablation).
 
-Trains the affinity model once per ablation variant (baseline + every leaf field of
-``structured_description`` + the ``assay_type`` tag) and compares test metrics, so we can see
-which field carries predictive signal. Works for SPR / ITC / RBA / FPA; the assay type is a CLI
-argument and ``df_path`` / ``target_dir`` are derived from it.
+Trains the affinity model once on the baseline (``qwen3``) embeddings per seed, then for every
+ablation variant (each leaf field of ``structured_description`` + the ``assay_type`` tag) feeds
+the masked test-set embeddings into that pre-trained baseline model and records how the test
+metrics change. No re-training per variant — only the test-time embeddings differ.
+
+Works for SPR / ITC / RBA / FPA; the assay type is a CLI argument and ``df_path`` / ``target_dir``
+are derived from it.
 
 Embeddings for every variant are cached up front by ``ablation_embed.build_ablation_embeddings``;
-each variant is then consumed by ``AffinityModuleDataModule`` via its ``assay_embedding_model``
-subdir (``qwen3`` for the baseline, ``ablation_<field>`` for each masked variant).
+the baseline checkpoint reads from ``qwen3/`` at training time, and at evaluation each masked
+variant is consumed by ``AffinityModuleDataModule`` via its ``assay_embedding_model`` subdir
+(``ablation_<field>/``).
 
 Example:
     python scripts/train/train_AffinityModule_assaycontext_ablation_study.py \
@@ -72,8 +76,7 @@ def embedding_model_for(variant: str) -> str:
     return f"ablation_{variant_dirname(variant)}"
 
 
-def run_variant(
-    variant: str,
+def train_baseline(
     *,
     assay_type: str,
     cfg,
@@ -90,16 +93,15 @@ def run_variant(
     use_wandb: bool,
     wandb_project: str,
     wandb_entity: Optional[str],
-) -> dict[str, float]:
-    """Train + evaluate one ablation variant across all seeds; return mean/std metrics."""
-    assay_embedding_model = embedding_model_for(variant)
-    ckpt_root = Path(target_dir) / "checkpoints" / f"ablation_{assay_type}" / variant_dirname(variant)
+) -> Path:
+    """Train the baseline (qwen3 embeddings) once per seed; return the checkpoint root dir."""
+    ckpt_root = Path(target_dir) / "checkpoints" / f"ablation_{assay_type}" / "baseline"
+    assay_embedding_model = embedding_model_for("baseline")
 
-    # ---- Training ----
     for seed in seed_list:
         ckpt_path = ckpt_root / f"seed_{seed}.ckpt"
         if ckpt_path.exists():
-            print(f"[{variant}] seed {seed}: checkpoint exists, skipping training")
+            print(f"[baseline] seed {seed}: checkpoint exists, skipping training")
             continue
 
         datacfg = DataConfig(
@@ -137,7 +139,7 @@ def run_variant(
             wandb_logger = WandbLogger(
                 project=wandb_project,
                 entity=wandb_entity,
-                name=f"{assay_type}_{variant_dirname(variant)}_seed{seed}",
+                name=f"{assay_type}_baseline_seed{seed}",
                 group=f"ablation_{assay_type}",
                 save_dir=str(ckpt_root),
                 log_model=False,
@@ -157,12 +159,33 @@ def run_variant(
         if wandb_logger is not None:
             wandb_logger.experiment.finish()
 
-    # ---- Evaluation ----
+    return ckpt_root
+
+
+def run_variant(
+    variant: str,
+    *,
+    df_path: str,
+    target_dir: str,
+    assay_embedding_injection_method: str,
+    seed_list: list[int],
+    split_method: str,
+    baseline_ckpt_root: Path,
+    device: str,
+    batch_size: int,
+) -> dict[str, float]:
+    """Evaluate one ablation variant on the test set using the pre-trained baseline checkpoint.
+
+    The model weights come from the baseline checkpoint (trained on ``qwen3`` embeddings); only
+    the test-time ``assay_embedding_model`` differs across variants. No re-training.
+    """
+    assay_embedding_model = embedding_model_for(variant)
+
     mses, rps, cindexes = [], [], []
     for seed in seed_list:
-        ckpt_path = ckpt_root / f"seed_{seed}.ckpt"
+        ckpt_path = baseline_ckpt_root / f"seed_{seed}.ckpt"
         if not ckpt_path.exists():
-            print(f"[{variant}] seed {seed}: no checkpoint, skipping eval")
+            print(f"[{variant}] seed {seed}: baseline checkpoint missing at {ckpt_path}, skipping")
             continue
         datacfg = DataConfig(
             df_path=df_path,
@@ -316,32 +339,44 @@ def main(
             print(f"[ablation] caching embeddings: {' '.join(cmd)}")
             subprocess.run(cmd, check=True)
 
-    print(f"[ablation] {assay_type}: {len(variants)} variants to train: {variants}")
+    print(f"[ablation] {assay_type}: {len(variants)} variants to evaluate: {variants}")
 
-    # ---- Step 2: train + evaluate every variant ----
+    # ---- Step 2: train the baseline once per seed ----
+    baseline_ckpt_root = train_baseline(
+        assay_type=assay_type,
+        cfg=cfg,
+        df_path=df_path,
+        target_dir=target_dir,
+        assay_context_dim=assay_context_dim,
+        assay_embedding_injection_method=assay_embedding_injection_method,
+        seed_list=seed_list,
+        split_method=split_method,
+        max_epochs=max_epochs,
+        device=device,
+        batch_size=batch_size,
+        patience=patience,
+        use_wandb=use_wandb,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
+    )
+
+    # ---- Step 3: evaluate every variant against the baseline checkpoint ----
     rows = []
     for variant in variants:
         print(f"\n{'=' * 70}\n[ablation] variant: {variant}\n{'=' * 70}")
         rows.append(run_variant(
             variant,
-            assay_type=assay_type,
-            cfg=cfg,
             df_path=df_path,
             target_dir=target_dir,
-            assay_context_dim=assay_context_dim,
             assay_embedding_injection_method=assay_embedding_injection_method,
             seed_list=seed_list,
             split_method=split_method,
-            max_epochs=max_epochs,
+            baseline_ckpt_root=baseline_ckpt_root,
             device=device,
             batch_size=batch_size,
-            patience=patience,
-            use_wandb=use_wandb,
-            wandb_project=wandb_project,
-            wandb_entity=wandb_entity,
         ))
 
-    # ---- Step 3: summary ----
+    # ---- Step 4: summary ----
     write_summary(rows, assay_type)
 
 

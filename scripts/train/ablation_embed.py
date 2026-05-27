@@ -108,15 +108,23 @@ def build_augmented_json(
     Matches embed_descriptions.py: deep-copy the structured_description, append the
     ``assay_type`` label and (when available) ``binding_affinity_type``. ``variant`` selects
     what to ablate:
-      - ``baseline``        -> nothing removed
-      - ``assay_type``      -> the assay_type augmentation key omitted
-      - any dotted path     -> that structured_description leaf removed
+      - ``baseline``                -> nothing removed
+      - ``assay_type``              -> the assay_type augmentation key omitted
+      - any dotted path             -> that structured_description leaf removed
+      - ``a.b+c.d`` (``+``-joined)  -> every listed leaf removed; include ``assay_type``
+                                       in the list to also drop the assay-type tag
     """
     masked = copy.deepcopy(structured_description)
-    if variant not in ("baseline", ASSAY_TYPE_VARIANT):
-        _delete_dotted(masked, variant)
+    include_assay_type = True
+    if variant != "baseline":
+        parts = variant.split("+")
+        if ASSAY_TYPE_VARIANT in parts:
+            include_assay_type = False
+        for part in parts:
+            if part and part != ASSAY_TYPE_VARIANT:
+                _delete_dotted(masked, part)
 
-    if variant != ASSAY_TYPE_VARIANT:
+    if include_assay_type:
         masked["assay_type"] = assay_label
 
     affinity = entry.get("affinity_data")

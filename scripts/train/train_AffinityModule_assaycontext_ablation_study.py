@@ -1,16 +1,19 @@
 """Leaf-field ablation study for the assay-context embedding (test-time ablation).
 
-Trains the affinity model once on the baseline (``qwen3``) embeddings per seed, then for every
-ablation variant (each leaf field of ``structured_description`` + the ``assay_type`` tag) feeds
-the masked test-set embeddings into that pre-trained baseline model and records how the test
-metrics change. No re-training per variant — only the test-time embeddings differ.
+Trains a small head on the pre-computed `g` + Qwen3 assay-context embedding (baseline,
+``qwen3``) once per seed, then for every ablation variant (each leaf field of
+``structured_description`` + the ``assay_type`` tag) feeds the masked test-set embeddings
+into that pre-trained baseline head and records how the test metrics change. No
+re-training per variant — only the test-time embeddings differ. The pairformer backbone
+is **never trained** here; ``g`` comes from the cached
+``<target_dir>/processed/g/<rid>/g_<rid>.npz`` files written by ``scripts/extract_affinity_g.py``.
 
 Works for SPR / ITC / RBA / FPA; the assay type is a CLI argument and ``df_path`` / ``target_dir``
 are derived from it.
 
 Embeddings for every variant are cached up front by ``ablation_embed.build_ablation_embeddings``;
-the baseline checkpoint reads from ``qwen3/`` at training time, and at evaluation each masked
-variant is consumed by ``AffinityModuleDataModule`` via its ``assay_embedding_model`` subdir
+the baseline head reads from ``qwen3/`` at training time, and at evaluation each masked
+variant is consumed by ``AffinityGHeadDataModule`` via its ``assay_embedding_model`` subdir
 (``ablation_<field>/``).
 
 Example:
@@ -29,12 +32,11 @@ from typing import Optional
 import click
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
-# Reuse the Lightning wrapper / metrics from the single-run training script.
+# Reuse the Lightning wrapper / metrics from the g-head training script.
 _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
@@ -46,7 +48,7 @@ from ablation_embed import (  # noqa: E402
     enumerate_leaf_fields,
     variant_dirname,
 )
-from train_AffinityModule_assaycontext import LightningAffinityModule  # noqa: E402
+from train_AffinityGHead import LightningAffinityGHead  # noqa: E402
 
 # Qwen3-Embedding-8B / sentence-transformers live in the llm_affinity env, not the boltz env,
 # so the embedding pass is run as a subprocess with that interpreter.
@@ -59,42 +61,76 @@ EMBED_PYTHON = next(
     _EMBED_PYTHON_CANDIDATES[0],
 )
 
-from boltz.data.module.training_AffinityModule_assaycontext import (  # noqa: E402
-    AffinityModuleDataModule,
+from boltz.data.module.training_AffinityGHead import (  # noqa: E402
+    ASSAY_TYPES,
+    AffinityGHeadDataModule,
+    AssayConfig,
     DataConfig,
 )
 
 
 def embedding_model_for(variant: str) -> str:
-    """The ``assay_embedding_model`` subdir a variant trains from.
+    """The ``assay_embedding_model`` subdir a variant reads from.
 
-    The baseline reuses the existing ``qwen3/`` embeddings directly (verified equal to a
-    freshly generated baseline); every masked variant uses its own ``ablation_<field>/`` dir.
+    The baseline reuses the existing ``qwen3/`` embeddings directly; every masked variant
+    uses its own ``ablation_<field>/`` dir.
     """
     if variant == "baseline":
         return "qwen3"
     return f"ablation_{variant_dirname(variant)}"
 
 
+def _datacfg(
+    *,
+    assay_type: str,
+    df_path: str,
+    target_dir: str,
+    seed: int,
+    batch_size: int,
+    assay_embedding_model: str,
+    g_module_key: str,
+    split_method: str,
+    assay_context_dim: int,
+    null_ids_set: frozenset[str],
+) -> DataConfig:
+    return DataConfig(
+        assays=[AssayConfig(assay_type=assay_type, df_path=df_path, target_dir=target_dir)],
+        seed=seed,
+        batch_size=batch_size,
+        assay_embedding_model=assay_embedding_model,
+        g_module_key=g_module_key,
+        split_method=split_method,
+        load_assay_context=True,
+        assay_context_dim=assay_context_dim,
+        null_context_assays=null_ids_set,
+    )
+
+
 def train_baseline(
     *,
     assay_type: str,
-    cfg,
     df_path: str,
     target_dir: str,
+    token_z: int,
+    input_token_s: int,
     assay_context_dim: int,
-    assay_embedding_injection_method: str,
+    g_module_key: str,
+    fusion: str,
+    null_ids_set: frozenset[str],
+    null_ids: list[int],
     seed_list: list[int],
     split_method: str,
     max_epochs: int,
     device: str,
     batch_size: int,
+    lr: float,
+    weight_decay: float,
     patience: int,
     use_wandb: bool,
     wandb_project: str,
     wandb_entity: Optional[str],
 ) -> Path:
-    """Train the baseline (qwen3 embeddings) once per seed; return the checkpoint root dir."""
+    """Train the baseline (qwen3 embeddings) head once per seed; return the checkpoint root dir."""
     ckpt_root = Path(target_dir) / "checkpoints" / f"ablation_{assay_type}" / "baseline"
     assay_embedding_model = embedding_model_for("baseline")
 
@@ -104,24 +140,31 @@ def train_baseline(
             print(f"[baseline] seed {seed}: checkpoint exists, skipping training")
             continue
 
-        datacfg = DataConfig(
+        datacfg = _datacfg(
+            assay_type=assay_type,
             df_path=df_path,
             target_dir=target_dir,
             seed=seed,
             batch_size=batch_size,
             assay_embedding_model=assay_embedding_model,
+            g_module_key=g_module_key,
             split_method=split_method,
+            assay_context_dim=assay_context_dim,
+            null_ids_set=null_ids_set,
         )
-        model_module = LightningAffinityModule(
-            token_s=cfg.token_s,
-            token_z=cfg.token_z,
+        model_module = LightningAffinityGHead(
+            token_z=token_z,
+            input_token_s=input_token_s,
             assay_context=True,
             assay_context_random_generation=False,
             assay_context_dim=assay_context_dim,
-            assay_embedding_injection_method=assay_embedding_injection_method,
-            affinity_model_args=cfg.affinity_model_args2,
+            use_g=True,
+            fusion=fusion,
+            null_context_ids=null_ids,
+            lr=lr,
+            weight_decay=weight_decay,
         )
-        data_module = AffinityModuleDataModule(datacfg)
+        data_module = AffinityGHeadDataModule(datacfg)
 
         early_stopping = EarlyStopping(
             monitor="val/loss", mode="min", patience=patience, min_delta=0.0, verbose=True
@@ -165,18 +208,21 @@ def train_baseline(
 def run_variant(
     variant: str,
     *,
+    assay_type: str,
     df_path: str,
     target_dir: str,
-    assay_embedding_injection_method: str,
-    seed_list: list[int],
+    g_module_key: str,
     split_method: str,
+    assay_context_dim: int,
+    null_ids_set: frozenset[str],
+    seed_list: list[int],
     baseline_ckpt_root: Path,
     device: str,
     batch_size: int,
 ) -> dict[str, float]:
     """Evaluate one ablation variant on the test set using the pre-trained baseline checkpoint.
 
-    The model weights come from the baseline checkpoint (trained on ``qwen3`` embeddings); only
+    The head weights come from the baseline checkpoint (trained on ``qwen3`` embeddings); only
     the test-time ``assay_embedding_model`` differs across variants. No re-training.
     """
     assay_embedding_model = embedding_model_for(variant)
@@ -187,22 +233,25 @@ def run_variant(
         if not ckpt_path.exists():
             print(f"[{variant}] seed {seed}: baseline checkpoint missing at {ckpt_path}, skipping")
             continue
-        datacfg = DataConfig(
+        datacfg = _datacfg(
+            assay_type=assay_type,
             df_path=df_path,
             target_dir=target_dir,
             seed=seed,
             batch_size=batch_size,
             assay_embedding_model=assay_embedding_model,
+            g_module_key=g_module_key,
             split_method=split_method,
+            assay_context_dim=assay_context_dim,
+            null_ids_set=null_ids_set,
         )
-        model_module = LightningAffinityModule.load_from_checkpoint(
+        model_module = LightningAffinityGHead.load_from_checkpoint(
             str(ckpt_path),
             map_location=torch.device("cpu"),
             assay_context_random_generation=False,
-            assay_embedding_injection_method=assay_embedding_injection_method,
         )
         model_module.eval()
-        data_module = AffinityModuleDataModule(datacfg)
+        data_module = AffinityGHeadDataModule(datacfg)
         trainer = Trainer(devices=[int(device)], accelerator="gpu", log_every_n_steps=1)
         result = trainer.test(model_module, datamodule=data_module)[0]
         mses.append(result.get("test/mse"))
@@ -264,15 +313,21 @@ def write_summary(rows: list[dict], assay_type: str) -> None:
 @click.command()
 @click.option("--assay_type", required=True, type=click.Choice(list(ASSAY_LABELS.keys())),
               help="Assay type; df_path and target_dir are derived from it.")
-@click.option("--hparams_yaml", type=click.Path(exists=True, dir_okay=False, path_type=str),
-              default="/data/mwu11/boltz/BindingDB/itc/boltz_results_yaml_affinity_input/lightning_logs/version_1/hparams.yaml",
-              show_default=True, help="Lightning hparams.yaml providing model architecture args.")
+@click.option("--token_z", type=int, default=128, show_default=True,
+              help="Pairwise token dim of the cached g (must match the backbone that produced g_*.npz).")
+@click.option("--input_token_s", type=int, default=384, show_default=True,
+              help="Single-token dim of the cached g.")
+@click.option("--g_module_key", type=click.Choice(["affinity_module1", "affinity_module2"]),
+              default="affinity_module1", show_default=True,
+              help="Which g vector to use from the cached g_*.npz.")
 @click.option("--assay_context_dim", type=int, default=4096, show_default=True,
-              help="Dimensionality of the assay-context vector fed to the model "
+              help="Dimensionality of the assay-context vector fed to the head "
                    "(truncates the 4096-dim Qwen3 embedding; raise for higher ablation sensitivity).")
-@click.option("--assay_embedding_injection_method",
-              type=click.Choice(["dual_film", "concatenate_g_after_meanpooling"]),
-              default="concatenate_g_after_meanpooling", show_default=True)
+@click.option("--fusion", type=click.Choice(["concat", "film"]), default="concat", show_default=True,
+              help="How to combine g with assay_context in the head: 'concat' or 'film'.")
+@click.option("--null_context_assays", type=str, default="", show_default=True,
+              help="Comma-separated assays whose context slot is replaced by the learned null "
+                   "vector instead of a real embedding. Default '' = real context for every assay.")
 @click.option("--seeds", type=str, default="0", show_default=True,
               help="Comma-separated list of seeds (e.g. '0,1,2').")
 @click.option("--split_method", type=click.Choice(["pair-level-random", "pmid-level-random"]),
@@ -280,9 +335,11 @@ def write_summary(rows: list[dict], assay_type: str) -> None:
 @click.option("--ablation_fields", type=str, default=None,
               help="Comma-separated subset of variants to run (default: baseline + all leaf "
                    "fields + assay_type). 'baseline' is always included.")
-@click.option("--max_epochs", type=int, default=50, show_default=True)
+@click.option("--max_epochs", type=int, default=100, show_default=True)
 @click.option("--device", type=str, default="0", show_default=True, help="CUDA device index.")
-@click.option("--batch_size", type=int, default=16, show_default=True)
+@click.option("--batch_size", type=int, default=64, show_default=True)
+@click.option("--lr", type=float, default=3e-4, show_default=True)
+@click.option("--weight_decay", type=float, default=0.0, show_default=True)
 @click.option("--patience", type=int, default=20, show_default=True)
 @click.option("--embed_batch_size", type=int, default=16, show_default=True,
               help="Batch size for the Qwen3 embedding pass.")
@@ -293,15 +350,20 @@ def write_summary(rows: list[dict], assay_type: str) -> None:
 @click.option("--wandb_entity", type=str, default="news012147stw", show_default=True)
 def main(
     assay_type: str,
-    hparams_yaml: str,
+    token_z: int,
+    input_token_s: int,
+    g_module_key: str,
     assay_context_dim: int,
-    assay_embedding_injection_method: str,
+    fusion: str,
+    null_context_assays: str,
     seeds: str,
     split_method: str,
     ablation_fields: Optional[str],
     max_epochs: int,
     device: str,
     batch_size: int,
+    lr: float,
+    weight_decay: float,
     patience: int,
     embed_batch_size: int,
     skip_embedding: bool,
@@ -309,12 +371,17 @@ def main(
     wandb_project: str,
     wandb_entity: Optional[str],
 ) -> None:
-    """Run the leaf-field ablation study for one assay type."""
+    """Run the leaf-field ablation study for one assay type (head-only training)."""
     paths = assay_paths(assay_type)
     df_path = str(paths["df_path"])
     target_dir = str(paths["target_dir"])
-    cfg = OmegaConf.load(hparams_yaml)
     seed_list = [int(s) for s in seeds.split(",") if s.strip()]
+
+    null_set = frozenset(x.strip() for x in null_context_assays.split(",") if x.strip())
+    bad = null_set - set(ASSAY_TYPES)
+    if bad:
+        raise click.UsageError(f"--null_context_assays has unknown names: {sorted(bad)}")
+    null_ids = [ASSAY_TYPES.index(n) for n in null_set]
 
     # ---- Step 1: cache embeddings for every variant ----
     requested = None
@@ -327,7 +394,7 @@ def main(
     )
 
     if not skip_embedding:
-        # Only non-baseline variants need fresh embeddings; baseline training reads qwen3/ directly.
+        # Only non-baseline variants need fresh embeddings; baseline reads qwen3/ directly.
         to_embed = [v for v in variants if v != "baseline"]
         if to_embed:
             cmd = [
@@ -341,19 +408,25 @@ def main(
 
     print(f"[ablation] {assay_type}: {len(variants)} variants to evaluate: {variants}")
 
-    # ---- Step 2: train the baseline once per seed ----
+    # ---- Step 2: train the baseline head once per seed ----
     baseline_ckpt_root = train_baseline(
         assay_type=assay_type,
-        cfg=cfg,
         df_path=df_path,
         target_dir=target_dir,
+        token_z=token_z,
+        input_token_s=input_token_s,
         assay_context_dim=assay_context_dim,
-        assay_embedding_injection_method=assay_embedding_injection_method,
+        g_module_key=g_module_key,
+        fusion=fusion,
+        null_ids_set=null_set,
+        null_ids=null_ids,
         seed_list=seed_list,
         split_method=split_method,
         max_epochs=max_epochs,
         device=device,
         batch_size=batch_size,
+        lr=lr,
+        weight_decay=weight_decay,
         patience=patience,
         use_wandb=use_wandb,
         wandb_project=wandb_project,
@@ -366,11 +439,14 @@ def main(
         print(f"\n{'=' * 70}\n[ablation] variant: {variant}\n{'=' * 70}")
         rows.append(run_variant(
             variant,
+            assay_type=assay_type,
             df_path=df_path,
             target_dir=target_dir,
-            assay_embedding_injection_method=assay_embedding_injection_method,
-            seed_list=seed_list,
+            g_module_key=g_module_key,
             split_method=split_method,
+            assay_context_dim=assay_context_dim,
+            null_ids_set=null_set,
+            seed_list=seed_list,
             baseline_ckpt_root=baseline_ckpt_root,
             device=device,
             batch_size=batch_size,

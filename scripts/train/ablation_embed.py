@@ -21,6 +21,7 @@ Library usage (called by the training script):
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -90,11 +91,23 @@ def _delete_dotted(obj: dict, dotted: str) -> None:
         cur.pop(parts[-1], None)
 
 
+_VARIANT_DIRNAME_MAX = 180
+
+
 def variant_dirname(variant: str) -> str:
-    """Filesystem-safe name for a variant (dotted field path -> double underscore)."""
+    """Filesystem-safe name for a variant (dotted field path -> double underscore).
+
+    Long ``+``-joined variants are truncated with a stable hash suffix to stay under
+    the per-component filesystem limit (Linux NAME_MAX = 255).
+    """
     if variant == "baseline":
         return "baseline"
-    return variant.replace(".", "__")
+    name = variant.replace(".", "__")
+    if len(name) <= _VARIANT_DIRNAME_MAX:
+        return name
+    digest = hashlib.sha1(variant.encode("utf-8")).hexdigest()[:8]
+    keep = _VARIANT_DIRNAME_MAX - len(digest) - 1  # underscore separator
+    return f"{name[:keep]}_{digest}"
 
 
 def build_augmented_json(
